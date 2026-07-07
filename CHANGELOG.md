@@ -3,6 +3,42 @@
 All notable changes are documented here. 本文件记录所有重要变更。
 中英对照（中文在前，English after）.
 
+## [0.5.7] - 2026-07-08
+
+### 新增 / Added
+
+- **新增默认壁纸 MS (#231)。** 新用户首次启动默认使用 `assets/ms.jpg` 作为壁纸；已有用户配置不会被迁移或覆盖，保留原本的壁纸选择。
+
+### 改进 / Changed
+
+- **优化标签页标题显示与复制 (#228)。** 标签页宽度会按标题显示宽度动态调整，中文等非 ASCII 字符按双宽估算，长标题会适当缩小字号以减少截断；移除悬浮提示以避免影响顶部拖动交互，单击标签页可复制完整标题。
+- **优化壁纸设置面板滚动。** 内置壁纸列表过宽时会在设置面板内横向滚动，避免缩放或窗口较窄时壁纸选项溢出。
+- **欢迎页作为侧栏时隐藏空会话提示。** 开启“欢迎页为侧栏”后，不再在主区域显示“从左侧选择一个会话开始”，避免提示遮挡壁纸和主界面。
+
+### 修复 / Fixed
+
+- **修复版本号与发布校验问题 (#226, #229, #236)。** 命令行支持 `--version` / `-V`，发布脚本与工作流会校验 Cargo 版本、锁文件版本和产物版本，避免再次发布版本号不一致的构建。
+- **修复串口历史输出搜索不到的问题 (#233)。** 当前可见行没有命中时会继续搜索 scrollback 历史，找到匹配后自动滚动到对应位置并重绘高亮。
+- **修复 Windows 无边框窗口恢复后超出屏幕的问题 (#234)。** 启动与保存布局时按当前显示器尺寸钳制窗口大小，并读取 native 最大化状态，避免 Win11 下恢复到大于屏幕的窗口尺寸。
+
+---
+
+### Added
+
+- **Add MS as the default wallpaper (#231).** New users now start with `assets/ms.jpg` as the default wallpaper; existing user configurations are not migrated or overwritten.
+
+### Changed
+
+- **Improve tab title display and copy (#228).** Tab widths now adapt to the title's display width, counting Chinese and other non-ASCII characters as double width, and long titles use a smaller font to reduce truncation. Hover tooltips were removed to avoid interfering with top-bar drag interactions, while clicking a tab copies the full title.
+- **Improve scrolling in wallpaper settings.** Built-in wallpaper choices now scroll horizontally inside the settings panel instead of overflowing on smaller or scaled windows.
+- **Hide the empty-session prompt when the welcome page is docked as a sidebar.** The main pane no longer shows "Select a session from the left to start" when the welcome sidebar is already visible.
+
+### Fixed
+
+- **Fix version and release validation issues (#226, #229, #236).** The CLI supports `--version` / `-V`, and release scripts/workflows validate Cargo versions, lockfile versions, and built artifact versions to prevent mismatched releases.
+- **Fix searching serial scrollback history (#233).** When no visible row matches, search continues through scrollback history, scrolls to the first match, and redraws highlights.
+- **Clamp restored frameless windows to the current monitor on Windows (#234).** Startup and layout saving now clamp window size to the visible monitor and read the native maximized state, preventing Win11 restores from exceeding the screen.
+
 ## [0.5.6] - 2026-07-06
 
 ### 修复 / Fixed
