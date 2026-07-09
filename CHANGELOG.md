@@ -3,16 +3,36 @@
 All notable changes are documented here. 本文件记录所有重要变更。
 中英对照（中文在前，English after）.
 
-## [Unreleased]
+## [0.5.8] - 2026-07-10
+
+### 新增 / Added
+
+- **SFTP 文件列表支持排序 (#248)。** 文件列表的名称、大小、修改时间表头支持点击排序，点击循环为升序、降序、恢复默认；右键菜单新增“清除排序”，可直接恢复默认排序。
+
+### 改进 / Changed
+
+- **WebDAV 上传前自动创建缺失目录。** 上传连接配置前会逐级检查远端父目录，目录不存在时尝试通过 WebDAV `MKCOL` 创建；如果文件夹不存在且无权限创建，会返回明确提示“文件夹不存在也无权限创建”。
 
 ### 修复 / Fixed
 
+- **修复顶部工具栏与 SFTP 操作栏间距问题 (#245)。** 统一沉浸式标题栏场景下顶部工具栏图标的 Y 轴计算，并增加 SFTP 文件面板操作栏高度和上下内边距，避免上传按钮贴近拖动条。
+- **修复复制终端软换行文本时多出换行的问题 (#241)。** 终端行会保留 vt100 的软换行标记，复制选区时跳过由终端宽度造成的自动折行换行，只在真实换行处插入换行符。
 - **修复部分旧服务器 SFTP 认证失败的问题 (#186)。** SFTP 在 password 认证被拒后会像终端连接一样重连并尝试 keyboard-interactive，兼容只开放键盘交互认证的 GBK/旧服务器。
 
 ---
 
+### Added
+
+- **Support sorting the SFTP file list (#248).** The name, size, and modified-time headers now cycle through ascending, descending, and default order when clicked. The context menu also adds “Clear sort” to restore the default order.
+
+### Changed
+
+- **Create missing WebDAV folders before upload.** Before uploading the connection config, WebDAV now checks each remote parent folder and creates missing folders with `MKCOL`; if a folder is missing and cannot be created, it reports “folder does not exist and cannot be created”.
+
 ### Fixed
 
+- **Fix top toolbar and SFTP action bar spacing (#245).** The top toolbar Y offset is now centralized for immersive-titlebar layouts, and the SFTP file panel action bar has more height and vertical padding so the upload button no longer sits too close to the splitter.
+- **Preserve logical lines when copying soft-wrapped terminal text (#241).** Terminal rows now retain vt100 soft-wrap metadata, and selection copy skips newlines introduced only by terminal-width wrapping while preserving real line breaks.
 - **Fix SFTP authentication on some legacy servers (#186).** When password authentication is rejected, SFTP now reconnects and tries keyboard-interactive like terminal sessions do, improving compatibility with GBK/legacy servers that only allow keyboard-interactive auth.
 
 ## [0.5.7] - 2026-07-08
