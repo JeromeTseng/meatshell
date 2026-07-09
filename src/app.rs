@@ -7837,8 +7837,9 @@ struct HistSpan {
     cells: i32,
 }
 
-/// A rendered line: plain text (one char per cell, for find/selection) + runs.
-type Line = (String, Vec<HistSpan>);
+/// A rendered line: plain text (one char per cell, for find/selection), style runs,
+/// and whether the row was soft-wrapped by the terminal width.
+type Line = (String, Vec<HistSpan>, bool);
 
 /// Per-session scrollback cap (recycled on clear / tab close).
 const MAX_HISTORY: usize = 100_000;
@@ -7941,7 +7942,7 @@ fn build_row(screen: &vt100::Screen, r: u16, cols: u16) -> Line {
             cells,
         });
     }
-    (plain, runs)
+    (plain, runs, screen.row_wrapped(r))
 }
 
 /// Detect how many lines scrolled off the top between two screen snapshots by
@@ -7977,7 +7978,7 @@ impl TermBuffer {
         let live: Vec<Line> = (0..rows).map(|r| build_row(s, r, cols)).collect();
         let used = live
             .iter()
-            .rposition(|(_, runs)| !runs.is_empty())
+            .rposition(|(_, runs, _)| !runs.is_empty())
             .map(|i| i + 1)
             .unwrap_or(0);
         (live, used)
@@ -8125,7 +8126,14 @@ impl TermBuffer {
                 String::new()
             };
             out.push_str(seg.trim_end());
-            if r != hi_r {
+            let wrapped = if r < hist_len {
+                self.history[r].2
+            } else if r - hist_len < live.len() {
+                live[r - hist_len].2
+            } else {
+                false
+            };
+            if r != hi_r && !wrapped {
                 out.push('\n');
             }
         }
@@ -8322,7 +8330,7 @@ impl TermBuffer {
             let mut last_content = 0i32;
             let s = self.parser.screen();
             for r in 0..rows {
-                let (plain, runs) = build_row(s, r, cols);
+                let (plain, runs, _wrapped) = build_row(s, r, cols);
                 if !runs.is_empty() {
                     last_content = r as i32;
                 }
@@ -8831,7 +8839,11 @@ mod selection_tests {
     use super::*;
 
     fn hist_line(s: &str) -> Line {
-        (s.to_string(), Vec::new())
+        (s.to_string(), Vec::new(), false)
+    }
+
+    fn wrapped_hist_line(s: &str) -> Line {
+        (s.to_string(), Vec::new(), true)
     }
 
     /// A TermBuffer whose live screen (rows×cols) shows `live_lines`, with the
@@ -8904,6 +8916,23 @@ mod selection_tests {
         };
         assert_eq!(sel(3), sel(0));
         assert_eq!(sel(3), "HIST0\nHIST1\nHIST2\nLIVE0\nLIVE1");
+    }
+
+    #[test]
+    fn extract_joins_soft_wrapped_rows() {
+        let mut buf = make_buf(5, 10, &[], &["x"], 0);
+        buf.history = vec![
+            wrapped_hist_line("0123456789"),
+            wrapped_hist_line("abcdefghij"),
+            hist_line("klmnop"),
+            hist_line("next"),
+        ];
+        buf.sel_anchor = Some((0, 0));
+        buf.sel_focus = Some((3, 9));
+        assert_eq!(
+            buf.extract_selection_text(),
+            "0123456789abcdefghijklmnop\nnext"
+        );
     }
 
     #[test]
@@ -8984,7 +9013,7 @@ mod selection_tests {
 
         let mut parser = vt100::Parser::new(3, 30, 0);
         parser.process(b"abc \x1b[7m20260705\x1b[27m end");
-        let (_plain, runs) = build_row(parser.screen(), 0, 30);
+        let (_plain, runs, _wrapped) = build_row(parser.screen(), 0, 30);
         let hit = runs
             .iter()
             .find(|span| span.text.contains("20260705"))
