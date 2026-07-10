@@ -284,8 +284,6 @@ export component AppWindow inherits Window {
     in-out property <length> sidebar-width: 220px;
     in-out property <length> sidebar-height: 240px;
     property <bool> sidebar-dragging;            // splitter being dragged
-    property <length> sidebar-drag-start-x;      // mouse-x at drag start
-    property <length> sidebar-drag-start-y;      // mouse-y at drag start
     callback persist-sidebar-width(float /* logical px */);
 
     // --- Panel docking (resource sidebar; SFTP follows in a later phase) ----
@@ -1115,8 +1113,6 @@ export component AppWindow inherits Window {
                 pointer-event(ev) => {
                     if (ev.kind == PointerEventKind.down) {
                         root.sidebar-dragging = true;
-                        root.sidebar-drag-start-x = self.mouse-x;
-                        root.sidebar-drag-start-y = self.mouse-y;
                     } else if (ev.kind == PointerEventKind.up) {
                         root.sidebar-dragging = false;
                         root.persist-sidebar-width(root.sidebar-width / 1px);
@@ -1125,18 +1121,25 @@ export component AppWindow inherits Window {
                 moved => {
                     if (root.sidebar-dragging) {
                         if (root.sidebar-horizontal) {
-                            // left grows with +dx, right grows with -dx.
+                            // Track the cursor in stable dock-area coordinates.
+                            // The splitter moves while resizing, so adding local
+                            // mouse deltas to the current width feeds the movement
+                            // back into itself and can suddenly widen the panel
+                            // on Win10 (#244).
                             root.sidebar-width = clamp(
-                                root.sidebar-width
-                                    + (root.sidebar-dock == "right" ? -1 : 1)
-                                      * (self.mouse-x - root.sidebar-drag-start-x),
+                                root.sidebar-dock == "right"
+                                    ? dock-area.absolute-position.x + dock-area.width
+                                        - (self.absolute-position.x + self.mouse-x)
+                                    : (self.absolute-position.x + self.mouse-x)
+                                        - dock-area.absolute-position.x,
                                 160px, 520px);
                         } else {
-                            // top grows with +dy, bottom grows with -dy.
                             root.sidebar-height = clamp(
-                                root.sidebar-height
-                                    + (root.sidebar-dock == "bottom" ? -1 : 1)
-                                      * (self.mouse-y - root.sidebar-drag-start-y),
+                                root.sidebar-dock == "bottom"
+                                    ? dock-area.absolute-position.y + dock-area.height
+                                        - (self.absolute-position.y + self.mouse-y)
+                                    : (self.absolute-position.y + self.mouse-y)
+                                        - dock-area.absolute-position.y,
                                 120px, 480px);
                         }
                     }

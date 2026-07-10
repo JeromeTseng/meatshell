@@ -7,6 +7,7 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 ### 修复 / Fixed
 
+- **修复拖动资源侧栏宽度时突然变宽的问题 (#244)。** 资源侧栏分隔条改为使用稳定的窗口绝对坐标计算宽高，不再把移动中的分隔条局部坐标反复累加到当前宽度，避免拖动时宽度突然跳变。
 - **修复 Windows 10 无边框窗口点击坐标整体错位的问题 (#193)。** Windows 创建 Slint/winit 窗口前会禁用 undecorated shadow 兼容层，避免部分 Win10 环境把隐藏边框计入命中区域，导致渲染位置与鼠标点击位置产生垂直偏移。
 - **改善 Windows 高 DPI 缩放下字体发糊的问题 (#224)。** Windows 默认使用 Slint software 渲染器，避开 2K/4K 屏幕开启 125%/150% 等缩放时 OpenGL/FemtoVG 路径可能导致的 UI 与设置页文字偏糊问题；仍可通过 `SLINT_BACKEND` 手动切换渲染器。
 - **修复 SFTP 面板拖动后拖拽上传命中区域错误的问题 (#253)。** 文件拖拽上传的落点判断会跟随 SFTP 面板的左、右、上、下停靠位置，只在当前文件列表区域内触发上传，不再固定只识别默认底部文件区。
@@ -17,6 +18,7 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 ### Fixed
 
+- **Fix sudden resource-sidebar width jumps while resizing (#244).** The resource-sidebar splitter now computes size from stable window-space coordinates instead of repeatedly adding local splitter deltas to the current width, preventing resize jumps while dragging.
 - **Fix whole-window click offset on Windows 10 frameless windows (#193).** Windows now disables winit's undecorated-shadow compatibility layer before creating Slint/winit windows, preventing some Win10 environments from counting hidden frame space in hit testing and shifting clicks vertically away from rendered pixels.
 - **Improve blurry text on Windows high-DPI scaling (#224).** Windows now defaults to Slint's software renderer, avoiding the OpenGL/FemtoVG path that can make UI and settings text look soft on 2K/4K displays using 125%/150% scaling; `SLINT_BACKEND` can still override the renderer manually.
 - **Fix drag-and-drop upload hit testing after moving the SFTP panel (#253).** File-drop upload detection now follows the SFTP panel on the left, right, top, or bottom dock and only triggers inside the current file-list area instead of staying fixed to the default bottom panel.
