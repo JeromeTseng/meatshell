@@ -15,7 +15,7 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 - **Fix terminal scrolling with the macOS trackpad (#252).** The terminal scroll hit layer now explicitly covers the output area, and macOS gets a winit-level trackpad wheel fallback; two-finger scrolling feeds the terminal scrollback/alt-screen wheel path instead of requiring the scrollbar thumb.
 
-## [0.6.0] - 2026-07-10
+## [0.5.71] - 2026-07-10
 
 ### 新增 / Added
 
