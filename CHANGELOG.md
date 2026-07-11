@@ -3,6 +3,18 @@
 All notable changes are documented here. 本文件记录所有重要变更。
 中英对照（中文在前，English after）.
 
+## [Unreleased]
+
+### 修复 / Fixed
+
+- **修复 oh-my-zsh 首屏显示 shell integration 注入命令的问题 (#257)。** 连接 zsh/oh-my-zsh 服务器时，隐藏注入命令回显的逻辑现在能处理 `\r` 与软换行，并优先按注入命令尾部定位删除范围，避免 `test -z "$FISH_VERSION" ...` 泄露到终端首屏。
+
+---
+
+### Fixed
+
+- **Fix shell-integration setup echo leaking on oh-my-zsh servers (#257).** When connecting to zsh/oh-my-zsh hosts, the setup-echo suppression now handles `\r` and soft-wrapped output and anchors removal on the setup command suffix, preventing the `test -z "$FISH_VERSION" ...` command from appearing on the first terminal screen.
+
 ## [0.6.1] - 2026-07-11
 
 ### 新增 / Added

@@ -106,6 +106,9 @@ const ZMODEM_CANCEL: [u8; 16] = [
     0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08,
 ];
 
+const PROMPT_SETUP_PREFIX: &str = "test -z \"$FISH_VERSION\"";
+const PROMPT_SETUP_SUFFIX: &str = "__ms7'";
+
 /// Detect the start of a ZMODEM transfer (sz/rz) in a raw channel chunk.
 ///
 /// Every ZMODEM frame begins with ZDLE (0x18) followed by a type byte; the
@@ -115,6 +118,49 @@ const ZMODEM_CANCEL: [u8; 16] = [
 fn contains_zmodem_init(data: &[u8]) -> bool {
     data.windows(2)
         .any(|w| w[0] == 0x18 && (w[1] == b'B' || w[1] == b'C'))
+}
+
+fn line_start_before(text: &str, pos: usize) -> usize {
+    text[..pos]
+        .rfind(['\r', '\n'])
+        .map(|i| i + 1)
+        .unwrap_or(0)
+}
+
+fn include_following_line_break(text: &str, mut pos: usize) -> usize {
+    let bytes = text.as_bytes();
+    if pos < bytes.len() && bytes[pos] == b'\r' {
+        pos += 1;
+        if pos < bytes.len() && bytes[pos] == b'\n' {
+            pos += 1;
+        }
+    } else if pos < bytes.len() && bytes[pos] == b'\n' {
+        pos += 1;
+        if pos < bytes.len() && bytes[pos] == b'\r' {
+            pos += 1;
+        }
+    }
+    pos
+}
+
+fn prompt_setup_echo_end(text: &str, prefix_pos: usize) -> usize {
+    if let Some(rel) = text[prefix_pos..].find(PROMPT_SETUP_SUFFIX) {
+        return include_following_line_break(
+            text,
+            prefix_pos + rel + PROMPT_SETUP_SUFFIX.len(),
+        );
+    }
+    let line_end = text[prefix_pos..]
+        .find(['\r', '\n'])
+        .map(|i| prefix_pos + i)
+        .unwrap_or(text.len());
+    include_following_line_break(text, line_end)
+}
+
+fn strip_prompt_setup_echo(text: &mut String, prefix_pos: usize, end_pos: usize) {
+    let start = line_start_before(text, prefix_pos);
+    let end = include_following_line_break(text, end_pos.min(text.len()));
+    text.replace_range(start..end, "");
 }
 
 /// Extract the remote path from an OSC 7 sequence embedded in `text`.
@@ -1056,11 +1102,6 @@ async fn run_session(
     // wraps — we never substring-match it.
     const PROMPT_BODY: &str = "test -z \"$FISH_VERSION\" && eval '__msc(){ __c=\"$(fc -ln -1 2>/dev/null)\"; [ -n \"$__c\" ] && [ \"$__c\" != \"$__cl\" ] && { __cl=\"$__c\"; printf \"\\033]697;%s\\007\" \"$__c\"; }; }; __ms7(){ printf \"\\033]7;file://%s%s\\007\" \"$HOSTNAME\" \"$PWD\"; __msc; }; __cl=\"$(fc -ln -1 2>/dev/null)\"; if [ -n \"$ZSH_VERSION\" ]; then autoload -Uz add-zsh-hook 2>/dev/null; add-zsh-hook precmd __ms7; else PROMPT_COMMAND=\"__ms7${PROMPT_COMMAND:+;$PROMPT_COMMAND}\"; fi; __ms7'";
     let prompt_setup = format!(" {}\r", PROMPT_BODY);
-    // A short, un-wrappable prefix of the injected line, used to locate (and
-    // strip) its echo. Hoisted so both the data path and the timeout path can
-    // use it (#140-1).
-    const PROMPT_PREFIX: &str = "test -z \"$FISH_VERSION\"";
-
     // --- Remote resource monitor (separate exec channel) ----------------
     // A tiny remote loop streams /proc/stat + /proc/meminfo every 2s; we parse
     // it into CPU% / mem / swap for the sidebar.  Best-effort: if the channel
@@ -1224,11 +1265,9 @@ async fn run_session(
                 suppress_echo = false;
                 suppress_deadline = None;
                 let mut buf = std::mem::take(&mut echo_buf);
-                if let Some(p) = buf.find(PROMPT_PREFIX) {
-                    let line_start = buf[..p].rfind('\n').map(|i| i + 1).unwrap_or(0);
-                    let line_end =
-                        buf[p..].find('\n').map(|i| p + i + 1).unwrap_or(buf.len());
-                    buf.replace_range(line_start..line_end, "");
+                if let Some(p) = buf.find(PROMPT_SETUP_PREFIX) {
+                    let end = prompt_setup_echo_end(&buf, p);
+                    strip_prompt_setup_echo(&mut buf, p, end);
                 }
                 if !buf.is_empty() {
                     let _ = events.send(SessionEvent::Output(buf));
@@ -1316,7 +1355,7 @@ async fn run_session(
                             const ECHO_BUF_CAP: usize = 1 << 14; // 16 KiB
                             // The command echo + its trailing OSC 7 (the one after
                             // our command, not any earlier prompt OSC 7).
-                            let landed = echo_buf.find(PROMPT_PREFIX).and_then(|p| {
+                            let landed = echo_buf.find(PROMPT_SETUP_PREFIX).and_then(|p| {
                                 extract_osc7_end(&echo_buf[p..])
                                     .map(|(cwd, rel)| (p, p + rel, cwd))
                             });
@@ -1325,9 +1364,7 @@ async fn run_session(
                                 tracing::debug!("OSC7 cwd={:?}", cwd);
                                 let _ = events.send(SessionEvent::CwdChanged(cwd));
                                 let mut buf = std::mem::take(&mut echo_buf);
-                                let line_start =
-                                    buf[..cmd_pos].rfind('\n').map(|i| i + 1).unwrap_or(0);
-                                buf.replace_range(line_start..osc_end, "");
+                                strip_prompt_setup_echo(&mut buf, cmd_pos, osc_end);
                                 buf
                             } else if echo_buf.len() >= ECHO_BUF_CAP {
                                 suppress_echo = false;
@@ -1932,6 +1969,35 @@ impl Handler for ClientHandler {
 fn _assert_handle_send() {
     fn takes<T: Send>() {}
     takes::<Handle<ClientHandler>>();
+}
+
+#[cfg(test)]
+mod prompt_setup_echo_tests {
+    use super::{prompt_setup_echo_end, strip_prompt_setup_echo, PROMPT_SETUP_PREFIX};
+
+    #[test]
+    fn strips_oh_my_zsh_echo_without_newline() {
+        let mut text = format!(
+            "➜  ~  {} && eval 'body; __ms7'\rafter prompt",
+            PROMPT_SETUP_PREFIX
+        );
+        let p = text.find(PROMPT_SETUP_PREFIX).unwrap();
+        let end = prompt_setup_echo_end(&text, p);
+        strip_prompt_setup_echo(&mut text, p, end);
+        assert_eq!(text, "after prompt");
+    }
+
+    #[test]
+    fn strips_echo_through_osc7() {
+        let mut text = format!(
+            "banner\n➜  ~  {} && eval 'body; __ms7'\r\u{1b}]7;file://host/home/jeff\u{07}prompt",
+            PROMPT_SETUP_PREFIX
+        );
+        let p = text.find(PROMPT_SETUP_PREFIX).unwrap();
+        let osc_end = text.find("prompt").unwrap();
+        strip_prompt_setup_echo(&mut text, p, osc_end);
+        assert_eq!(text, "banner\nprompt");
+    }
 }
 
 #[cfg(test)]
