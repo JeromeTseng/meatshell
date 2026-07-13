@@ -2616,7 +2616,7 @@ fn sync_sessions_to_model(store: &ConfigStore, model: &VecModel<SessionInfo>) {
             last_used: "".into(),
             group: "system".into(),
             group_header: if i == 0 { "system".into() } else { "".into() },
-            collapsed: false,
+            collapsed: true,
         });
     }
     for group in &display_groups {

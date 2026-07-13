@@ -163,6 +163,22 @@ fn strip_prompt_setup_echo(text: &mut String, prefix_pos: usize, end_pos: usize)
     text.replace_range(start..end, "");
 }
 
+/// Remove a late-echoed prompt setup command when it arrives after the initial
+/// suppression window. Some shells echo a long injected command only after the
+/// first prompt has already been delivered, so the normal buffered path cannot
+/// catch it (#266).
+fn strip_late_prompt_setup_echo(text: &mut String) -> bool {
+    let Some(prefix_pos) = text.find(PROMPT_SETUP_PREFIX) else {
+        return false;
+    };
+    let Some(rel_end) = text[prefix_pos..].find(PROMPT_SETUP_SUFFIX) else {
+        return false;
+    };
+    let end = prefix_pos + rel_end + PROMPT_SETUP_SUFFIX.len();
+    strip_prompt_setup_echo(text, prefix_pos, end);
+    true
+}
+
 /// Extract the remote path from an OSC 7 sequence embedded in `text`.
 ///
 /// Format: `ESC ] 7 ; file://hostname/path BEL`
@@ -1392,7 +1408,11 @@ async fn run_session(
                                 tracing::debug!("OSC7 cwd={:?}", cwd);
                                 let _ = events.send(SessionEvent::CwdChanged(cwd));
                             }
-                            chunk
+                            let mut clean = chunk;
+                            if prompt_injected {
+                                strip_late_prompt_setup_echo(&mut clean);
+                            }
+                            clean
                         };
 
                         // Capture commands run in the terminal via our OSC 697
@@ -2158,7 +2178,10 @@ fn _assert_handle_send() {
 
 #[cfg(test)]
 mod prompt_setup_echo_tests {
-    use super::{prompt_setup_echo_end, strip_prompt_setup_echo, PROMPT_SETUP_PREFIX};
+    use super::{
+        prompt_setup_echo_end, strip_late_prompt_setup_echo, strip_prompt_setup_echo,
+        PROMPT_SETUP_PREFIX,
+    };
 
     #[test]
     fn strips_oh_my_zsh_echo_without_newline() {
@@ -2182,6 +2205,16 @@ mod prompt_setup_echo_tests {
         let osc_end = text.find("prompt").unwrap();
         strip_prompt_setup_echo(&mut text, p, osc_end);
         assert_eq!(text, "banner\nprompt");
+    }
+
+    #[test]
+    fn strips_late_echoed_setup_command() {
+        let mut text = format!(
+            "prompt\r\n{} && eval 'body; __ms7'\r\nafter",
+            PROMPT_SETUP_PREFIX
+        );
+        assert!(strip_late_prompt_setup_echo(&mut text));
+        assert_eq!(text, "prompt\r\nafter");
     }
 }
 

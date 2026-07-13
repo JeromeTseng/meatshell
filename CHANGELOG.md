@@ -23,10 +23,12 @@ All notable changes are documented here. 本文件记录所有重要变更。
 - **Add a bold terminal text option (#262).** Settings → Font now includes a bold terminal text toggle that persists in the config and forces regular terminal output to render with a bold face while preserving ANSI bold behavior.
 - **Add Ctrl multi-selection and Shift range extension in the terminal (#262).** Hold Ctrl to add separate selection ranges and Shift to extend the active range; copied text preserves selection order.
 - **Add a multi-line paste safety prompt (#262).** Clipboard content containing line breaks now requires explicit review and confirmation before it is sent to the terminal.
+- **Collapse the built-in system terminal group by default.** WSL is listed only when `wsl.exe --status` reports that WSL is available.
 - **Add a server resource details window.** Clicking the sidebar “Server resources / Local resources” title or info button opens a detached system-information window with CPU, memory, swap, network, and filesystem status that updates with the sidebar data.
 
 ### Fixed
 
+- **Fix the long shell-integration setup command appearing after SSH login (#266).** Late-echoed initialization commands are now filtered even when they arrive after the initial connection-output suppression window.
 - **Fix a large blank area under the SFTP file list (#259).** The Files / Tunnels content panes now render mutually exclusively, so the hidden tunnel panel no longer consumes SFTP panel layout height and the file list regains its available space.
 - **Fix shell-integration setup echo leaking on oh-my-zsh servers (#257).** When connecting to zsh/oh-my-zsh hosts, the setup-echo suppression now handles `\r` and soft-wrapped output and anchors removal on the setup command suffix, preventing the `test -z "$FISH_VERSION" ...` command from appearing on the first terminal screen.
 
