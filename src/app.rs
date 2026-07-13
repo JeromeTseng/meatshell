@@ -36,6 +36,9 @@ struct TermBuffer {
     /// `anchor` = where the drag began, `focus` = the moving end.
     sel_anchor: Option<(usize, u16)>,
     sel_focus: Option<(usize, u16)>,
+    /// Additional Ctrl-selected ranges. The last range is the active range;
+    /// Shift extends it from its anchor while Ctrl adds another range.
+    sel_ranges: Vec<((usize, u16), (usize, u16))>,
     /// Session scrollback: lines that have scrolled off the top (oldest first).
     history: Vec<Line>,
     /// Previous frame's grid lines, for scroll-off detection.
@@ -3531,6 +3534,7 @@ fn wire_session_callbacks(
                     is_dark: is_dark_now,
                     sel_anchor: None,
                     sel_focus: None,
+                    sel_ranges: Vec::new(),
                     history: Vec::new(),
                     prev: Vec::new(),
                     view_offset: 0,
@@ -7817,6 +7821,7 @@ fn wire_key_input(
                             b.view_offset = 0;
                             b.sel_anchor = None;
                             b.sel_focus = None;
+                            b.sel_ranges.clear();
                             b.raw.clear();
                         }
                     }
@@ -8150,6 +8155,7 @@ fn wire_key_input(
     // Middle-click / Ctrl+Shift+V: paste clipboard text into PTY.
     {
         let handles = handles.clone();
+        let weak = window.as_weak();
         window.on_paste_from_clipboard(move |tab_id: SharedString| {
             // Clone the (Send) command sender for this tab so the clipboard read
             // can run off the UI thread.  Reading arboard on the event-loop
@@ -8160,20 +8166,62 @@ fn wire_key_input(
                 .get(tab_id.as_str())
                 .map(|h| h.commands.clone());
             let Some(sender) = sender else { return };
+            let weak = weak.clone();
+            let tab_id = tab_id.to_string();
             std::thread::spawn(move || {
                 match arboard::Clipboard::new().and_then(|mut cb| cb.get_text()) {
                     Ok(text) => {
-                        // Normalise line endings to a single CR so multi-line and
-                        // backslash-continued commands paste correctly (see the
-                        // function doc for the failure mode this prevents).
-                        let bytes = normalize_pasted_newlines(&text).into_bytes();
-                        let _ = sender.send(SessionCommand::RawInput(bytes));
+                        if text.contains(['\r', '\n']) {
+                            let preview: String = text.chars().take(1200).collect();
+                            let truncated = text.chars().count() > 1200;
+                            let preview = if truncated {
+                                format!("{preview}\n…")
+                            } else {
+                                preview
+                            };
+                            let _ = slint::invoke_from_event_loop(move || {
+                                if let Some(w) = weak.upgrade() {
+                                    w.set_paste_confirm_tab(tab_id.into());
+                                    w.set_paste_confirm_text(text.into());
+                                    w.set_paste_confirm_preview(preview.into());
+                                    w.set_paste_confirm_open(true);
+                                }
+                            });
+                        } else {
+                            // Normalise line endings to a single CR so the
+                            // terminal receives the same input on every OS.
+                            let bytes = normalize_pasted_newlines(&text).into_bytes();
+                            let _ = sender.send(SessionCommand::RawInput(bytes));
+                        }
                     }
                     Err(e) => tracing::warn!("paste_from_clipboard: clipboard error: {}", e),
                 }
             });
         });
     }
+
+    // Accept a previously reviewed multi-line paste (#262).
+    {
+        let handles_paste = handles.clone();
+        let weak = window.as_weak();
+        window.on_paste_confirmed(move |tab_id: SharedString| {
+            let Some(sender) = handles_paste
+                .borrow()
+                .get(tab_id.as_str())
+                .map(|h| h.commands.clone())
+            else {
+                return;
+            };
+            let Some(w) = weak.upgrade() else { return };
+            let text = w.get_paste_confirm_text().to_string();
+            let _ = sender.send(SessionCommand::RawInput(
+                normalize_pasted_newlines(&text).into_bytes(),
+            ));
+            w.set_paste_confirm_open(false);
+        });
+    }
+
+    window.on_paste_confirm_cancelled(|| {});
 
     // Context menu → 清空缓存: reset the local vt100 buffer (drops scrollback),
     // wipe the displayed screen, then nudge the remote to redraw a fresh prompt.
@@ -8193,6 +8241,7 @@ fn wire_key_input(
                 buf.view_offset = 0;
                 buf.sel_anchor = None;
                 buf.sel_focus = None;
+                buf.sel_ranges.clear();
                 buf.displayed_text = Vec::new();
                 buf.raw.clear();
             }
@@ -8335,7 +8384,7 @@ fn wire_key_input(
     {
         let bufs_sel = bufs.clone();
         let weak = window.as_weak();
-        window.on_term_select_start(move |tab_id: SharedString, row: i32, col: i32| {
+        window.on_term_select_start(move |tab_id: SharedString, row: i32, col: i32, ctrl: bool, shift: bool| {
             let tid = tab_id.to_string();
             with_term_buf(&bufs_sel, &tid, |buf| {
                 let (rows, cols) = buf.parser.screen().size();
@@ -8343,8 +8392,21 @@ fn wire_key_input(
                 let c = col.clamp(0, cols.saturating_sub(1) as i32) as u16;
                 // Anchor + focus in absolute scrollback coordinates.
                 let abs = buf.vis_to_abs(r);
-                buf.sel_anchor = Some((abs, c));
-                buf.sel_focus = Some((abs, c));
+                let point = (abs, c);
+                if ctrl && !shift {
+                    buf.sel_ranges.push((point, point));
+                } else if shift && !buf.sel_ranges.is_empty() {
+                    let anchor = buf.sel_ranges.last().map(|range| range.0).unwrap_or(point);
+                    if let Some(range) = buf.sel_ranges.last_mut() {
+                        *range = (anchor, point);
+                    }
+                } else {
+                    buf.sel_ranges.clear();
+                    buf.sel_ranges.push((point, point));
+                }
+                let (anchor, focus) = buf.sel_ranges.last().copied().unwrap_or((point, point));
+                buf.sel_anchor = Some(anchor);
+                buf.sel_focus = Some(focus);
             });
             if let Some(win) = weak.upgrade() {
                 rebuild_tab_display(&win, &bufs_sel, &tid);
@@ -8363,6 +8425,9 @@ fn wire_key_input(
                 if buf.sel_anchor.is_some() {
                     let abs = buf.vis_to_abs(r);
                     buf.sel_focus = Some((abs, c));
+                    if let Some(range) = buf.sel_ranges.last_mut() {
+                        range.1 = (abs, c);
+                    }
                 }
             });
             if let Some(win) = weak.upgrade() {
@@ -8383,6 +8448,7 @@ fn wire_key_input(
                     // Zero-area selection (a plain click) → clear it.
                     buf.sel_anchor = None;
                     buf.sel_focus = None;
+                    buf.sel_ranges.clear();
                     None
                 } else {
                     Some(extracted)
@@ -8449,6 +8515,9 @@ fn wire_key_input(
                 };
                 let abs = buf.vis_to_abs(edge_vis);
                 buf.sel_focus = Some((abs, focus_col));
+                if let Some(range) = buf.sel_ranges.last_mut() {
+                    range.1 = (abs, focus_col);
+                }
             }
             if let Some(win) = weak.upgrade() {
                 rebuild_tab_display(&win, &bufs_sel, &tid);
@@ -9415,40 +9484,50 @@ impl TermBuffer {
     /// Highlight rectangles for the current selection, clipped to the visible
     /// window of the current view.
     fn selection_rects_visible(&self, cols: u16) -> Vec<TermMatch> {
-        let (Some((ar, ac)), Some((fr, fc))) = (self.sel_anchor, self.sel_focus) else {
-            return Vec::new();
-        };
-        let (lo_r, lo_c, hi_r, hi_c) = if (ar, ac) <= (fr, fc) {
-            (ar, ac, fr, fc)
+        let ranges = if self.sel_ranges.is_empty() {
+            match (self.sel_anchor, self.sel_focus) {
+                (Some(anchor), Some(focus)) => vec![(anchor, focus)],
+                _ => Vec::new(),
+            }
         } else {
-            (fr, fc, ar, ac)
+            self.sel_ranges.clone()
         };
-        if (lo_r, lo_c) == (hi_r, hi_c) {
+        if ranges.is_empty() {
             return Vec::new();
         }
         let (_, live_used) = self.live_rows();
         let top = self.view_top_abs(live_used);
         let rows = self.parser.screen().size().0;
         let mut out = Vec::new();
-        for vis in 0..rows {
-            let abs = top + vis as usize;
-            if abs < lo_r || abs > hi_r {
+        for ((ar, ac), (fr, fc)) in ranges {
+            let (lo_r, lo_c, hi_r, hi_c) = if (ar, ac) <= (fr, fc) {
+                (ar, ac, fr, fc)
+            } else {
+                (fr, fc, ar, ac)
+            };
+            if (lo_r, lo_c) == (hi_r, hi_c) {
                 continue;
             }
-            let (c0, c1) = if abs == lo_r && abs == hi_r {
-                (lo_c.min(hi_c), lo_c.max(hi_c))
-            } else if abs == lo_r {
-                (lo_c, cols.saturating_sub(1))
-            } else if abs == hi_r {
-                (0, hi_c)
-            } else {
-                (0, cols.saturating_sub(1))
-            };
-            out.push(TermMatch {
-                row: vis as i32,
-                col: c0 as i32,
-                len: (c1.saturating_sub(c0) + 1) as i32,
-            });
+            for vis in 0..rows {
+                let abs = top + vis as usize;
+                if abs < lo_r || abs > hi_r {
+                    continue;
+                }
+                let (c0, c1) = if abs == lo_r && abs == hi_r {
+                    (lo_c.min(hi_c), lo_c.max(hi_c))
+                } else if abs == lo_r {
+                    (lo_c, cols.saturating_sub(1))
+                } else if abs == hi_r {
+                    (0, hi_c)
+                } else {
+                    (0, cols.saturating_sub(1))
+                };
+                out.push(TermMatch {
+                    row: vis as i32,
+                    col: c0 as i32,
+                    len: (c1.saturating_sub(c0) + 1) as i32,
+                });
+            }
         }
         out
     }
@@ -9486,9 +9565,30 @@ impl TermBuffer {
     /// Extract the selected text from the combined buffer (whole selection,
     /// even the parts currently scrolled out of view).
     fn extract_selection_text(&self) -> String {
-        let (Some((ar, ac)), Some((fr, fc))) = (self.sel_anchor, self.sel_focus) else {
-            return String::new();
+        let ranges = if self.sel_ranges.is_empty() {
+            match (self.sel_anchor, self.sel_focus) {
+                (Some(anchor), Some(focus)) => vec![(anchor, focus)],
+                _ => Vec::new(),
+            }
+        } else {
+            self.sel_ranges.clone()
         };
+        if ranges.is_empty() {
+            return String::new();
+        }
+        ranges
+            .iter()
+            .map(|&(anchor, focus)| self.extract_range_text(anchor, focus))
+            .filter(|text| !text.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn extract_range_text(
+        &self,
+        (ar, ac): (usize, u16),
+        (fr, fc): (usize, u16),
+    ) -> String {
         let (lo_r, lo_c, hi_r, hi_c) = if (ar, ac) <= (fr, fc) {
             (ar, ac, fr, fc)
         } else {
@@ -9622,6 +9722,7 @@ impl TermBuffer {
         // Scrollback line count changes, so absolute selection coords no longer map.
         self.sel_anchor = None;
         self.sel_focus = None;
+        self.sel_ranges.clear();
         self.feed_batched(&stream);
     }
 
@@ -10321,6 +10422,7 @@ mod selection_tests {
             is_dark: false,
             sel_anchor: None,
             sel_focus: None,
+            sel_ranges: Vec::new(),
             history: history.iter().map(|s| hist_line(s)).collect(),
             prev: Vec::new(),
             view_offset,

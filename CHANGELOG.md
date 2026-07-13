@@ -7,6 +7,7 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 ### 新增 / Added
 
+- **新增终端字体加粗开关 (#262)。** 设置 → 字体新增“终端字体加粗”，可将普通终端输出强制渲染为加粗字重，并会随配置持久化；ANSI 自带粗体仍然照常生效。
 - **新增详细系统信息窗口。** 点击侧栏“服务器资源 / 本机资源”标题或信息按钮可打开独立窗口，按概览、CPU、GPU、CPU 占用、内存、交换、网络接口与文件系统分区展示当前资源来源的详细状态，并跟随侧栏数据实时刷新。
 - **新增本地终端入口。** 快速连接列表新增内置 `system` 分组，可直接打开本机 PowerShell、CMD、WSL（Windows 可用时）或当前系统 Shell；内置项不写入配置，也不允许编辑、删除或移动分组。
 
@@ -19,6 +20,9 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 ### Added
 
+- **Add a bold terminal text option (#262).** Settings → Font now includes a bold terminal text toggle that persists in the config and forces regular terminal output to render with a bold face while preserving ANSI bold behavior.
+- **Add Ctrl multi-selection and Shift range extension in the terminal (#262).** Hold Ctrl to add separate selection ranges and Shift to extend the active range; copied text preserves selection order.
+- **Add a multi-line paste safety prompt (#262).** Clipboard content containing line breaks now requires explicit review and confirmation before it is sent to the terminal.
 - **Add a server resource details window.** Clicking the sidebar “Server resources / Local resources” title or info button opens a detached system-information window with CPU, memory, swap, network, and filesystem status that updates with the sidebar data.
 
 ### Fixed
