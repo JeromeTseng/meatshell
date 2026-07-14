@@ -3429,6 +3429,7 @@ dependencies = [
  "portable-pty",
  "rand 0.8.6",
  "raw-window-handle",
+ "regex",
  "rfd",
  "russh",
  "russh-keys",

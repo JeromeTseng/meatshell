@@ -25,7 +25,7 @@ import { TerminalView, TermSpan, TermMatch, QuickCmd } from "terminal_view.slint
 import { SftpEntry, SftpTreeNode, TunnelInfo } from "sftp_panel.slint";
 import { ProcWindow, ProcRow } from "proc_window.slint";
 import { SystemInfoWindow, SysInfoRow, SysMetricRow, SysNetRow } from "system_info_window.slint";
-import { InterfacePanel } from "interface_panel.slint";
+import { InterfacePanel, OutputRuleItem } from "interface_panel.slint";
 // Re-export so `slint::include_modules!` generates the detached Rust window types.
 export { ProcWindow, SystemInfoWindow }
 import { ComboBox, SpinBox, LineEdit, Button, ScrollView, CheckBox, Palette } from "std-widgets.slint";
@@ -390,6 +390,8 @@ export component AppWindow inherits Window {
     in-out property <bool> term-font-bold <=> Theme.term-font-bold;
     in-out property <bool> output-highlight-enabled: true;
     in-out property <string> output-highlight-preset: "log";
+    in property <[OutputRuleItem]> output-highlight-rules;
+    in-out property <string> output-highlight-rule-status;
     in-out property <float> ui-scale <=> Theme.ui-scale;   // global UI zoom (#100)
     in-out property <float> panel-font <=> Theme.panel-font;  // settings-panel font scale
     callback set-panel-font(int);                          // apply + persist (percent)
@@ -429,6 +431,9 @@ export component AppWindow inherits Window {
     callback set-term-font-size(int);              // apply + persist font size (px)
     callback set-term-font-bold(bool);             // apply + persist bold terminal text
     callback set-output-highlight(bool, string);   // enable + built-in preset
+    callback add-output-highlight-rule(string, bool, bool, bool, string) -> bool;
+    callback remove-output-highlight-rule(int);
+    callback set-output-highlight-rule-enabled(int, bool);
     callback set-ui-scale(int);                    // apply + persist UI scale (percent) (#100)
     // Immersive wallpaper (set by Rust). The active id + custom file basename
     // feed the Interface → Wallpaper picker.
@@ -3595,6 +3600,8 @@ export component AppWindow inherits Window {
                     term-font-bold: root.term-font-bold;
                     output-highlight-enabled <=> root.output-highlight-enabled;
                     output-highlight-preset <=> root.output-highlight-preset;
+                    output-highlight-rules: root.output-highlight-rules;
+                    output-highlight-rule-status <=> root.output-highlight-rule-status;
                     ui-scale: root.ui-scale;
                     sftp-follow-cd <=> root.sftp-follow-cd;
                     collapse-sidebar-default <=> root.collapse-sidebar-default;
@@ -3620,6 +3627,16 @@ export component AppWindow inherits Window {
                     set-term-font-bold(v) => { root.set-term-font-bold(v); }
                     set-output-highlight(enabled, preset) => {
                         root.set-output-highlight(enabled, preset);
+                    }
+                    add-output-highlight-rule(pattern, regex, case-sensitive, whole-line, color) => {
+                        root.add-output-highlight-rule(
+                            pattern, regex, case-sensitive, whole-line, color)
+                    }
+                    remove-output-highlight-rule(index) => {
+                        root.remove-output-highlight-rule(index);
+                    }
+                    set-output-highlight-rule-enabled(index, enabled) => {
+                        root.set-output-highlight-rule-enabled(index, enabled);
                     }
                     set-ui-scale(v) => { root.set-ui-scale(v); }
                     set-panel-font(v) => { root.set-panel-font(v); }

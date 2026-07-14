@@ -30,6 +30,7 @@ struct TermBuffer {
     /// Client-side highlighting for plain output. Stored per buffer so render
     /// workers do not need to borrow the UI/config state.
     output_highlight: OutputHighlightPreset,
+    custom_highlight_rules: Vec<CompiledOutputRule>,
     /// Drag selection in ABSOLUTE scrollback coordinates: each endpoint is a
     /// `(combined_row, col)` where `combined_row` indexes the virtual buffer of
     /// `history` lines followed by the live screen rows.  Absolute (rather than
@@ -100,6 +101,47 @@ impl OutputHighlightPreset {
     }
 }
 
+#[derive(Clone)]
+struct CompiledOutputRule {
+    matcher: regex::Regex,
+    whole_line: bool,
+    ansi_index: u8,
+}
+
+fn compile_output_rules(rules: &[OutputHighlightRule]) -> Vec<CompiledOutputRule> {
+    rules
+        .iter()
+        .filter(|rule| rule.enabled && !rule.pattern.trim().is_empty())
+        .filter_map(|rule| {
+            let pattern = if rule.regex {
+                rule.pattern.clone()
+            } else {
+                regex::escape(&rule.pattern)
+            };
+            let matcher = regex::RegexBuilder::new(&pattern)
+                .case_insensitive(!rule.case_sensitive)
+                .build()
+                .ok()?;
+            Some(CompiledOutputRule {
+                matcher,
+                whole_line: rule.whole_line,
+                ansi_index: highlight_color_index(&rule.color),
+            })
+        })
+        .collect()
+}
+
+fn highlight_color_index(color: &str) -> u8 {
+    match color {
+        "yellow" => 11,
+        "green" => 10,
+        "cyan" => 14,
+        "magenta" => 13,
+        "gray" => 8,
+        _ => 9,
+    }
+}
+
 /// Max UI renders per second for a tab under sustained output (#209).
 const RENDER_MIN_INTERVAL: std::time::Duration = std::time::Duration::from_millis(33);
 
@@ -154,7 +196,9 @@ use i_slint_backend_winit::WinitWindowAccessor;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use tokio::runtime::Runtime;
 
-use crate::config::{AuthMethod, ConfigStore, Secret, Session, SessionKind};
+use crate::config::{
+    AuthMethod, ConfigStore, OutputHighlightRule, Secret, Session, SessionKind,
+};
 use crate::i18n::t;
 use crate::sftp::{spawn_sftp, SftpHandle};
 use crate::ssh::{
@@ -794,6 +838,7 @@ pub fn run() -> Result<()> {
         window.set_term_font_bold(s.terminal_bold());
         window.set_output_highlight_enabled(s.output_highlight_enabled());
         window.set_output_highlight_preset(s.output_highlight_preset().into());
+        window.set_output_highlight_rules(output_highlight_rule_model(&s));
         window.set_ui_scale(s.ui_scale() as f32 / 100.0); // global UI zoom (#100)
         window.set_panel_font(s.panel_font() as f32 / 100.0); // settings-panel font scale
     }
@@ -1069,6 +1114,77 @@ pub fn run() -> Result<()> {
                 Err(e) => format!("{}: {}", t("上传失败", "upload failed"), e),
             };
             w.set_webdav_status(msg.into());
+        });
+    }
+    {
+        let weak = window.as_weak();
+        let store = store.clone();
+        let bufs = bufs.clone();
+        window.on_add_output_highlight_rule(
+            move |pattern: SharedString,
+                  is_regex,
+                  case_sensitive,
+                  whole_line,
+                  color: SharedString| {
+                let pattern = pattern.trim().to_string();
+                let validation = validate_output_highlight_rule(&pattern, is_regex, case_sensitive);
+                let Some(w) = weak.upgrade() else {
+                    return false;
+                };
+                if let Err(message) = validation {
+                    w.set_output_highlight_rule_status(message.into());
+                    return false;
+                }
+                if store.borrow().output_highlight_rules().len() >= 128 {
+                    w.set_output_highlight_rule_status(
+                        t("自定义规则最多 128 条", "Custom rules are limited to 128").into(),
+                    );
+                    return false;
+                }
+                {
+                    let mut s = store.borrow_mut();
+                    s.add_output_highlight_rule(OutputHighlightRule {
+                        pattern,
+                        regex: is_regex,
+                        case_sensitive,
+                        whole_line,
+                        color: color.to_string(),
+                        enabled: true,
+                    });
+                    let _ = s.save();
+                    w.set_output_highlight_rules(output_highlight_rule_model(&s));
+                    apply_custom_output_rules(&w, &bufs, s.output_highlight_rules());
+                }
+                w.set_output_highlight_rule_status("".into());
+                true
+            },
+        );
+    }
+    {
+        let weak = window.as_weak();
+        let store = store.clone();
+        let bufs = bufs.clone();
+        window.on_remove_output_highlight_rule(move |index| {
+            let Some(w) = weak.upgrade() else { return };
+            let mut s = store.borrow_mut();
+            s.remove_output_highlight_rule(index.max(0) as usize);
+            let _ = s.save();
+            w.set_output_highlight_rules(output_highlight_rule_model(&s));
+            apply_custom_output_rules(&w, &bufs, s.output_highlight_rules());
+            w.set_output_highlight_rule_status("".into());
+        });
+    }
+    {
+        let weak = window.as_weak();
+        let store = store.clone();
+        let bufs = bufs.clone();
+        window.on_set_output_highlight_rule_enabled(move |index, enabled| {
+            let Some(w) = weak.upgrade() else { return };
+            let mut s = store.borrow_mut();
+            s.set_output_highlight_rule_enabled(index.max(0) as usize, enabled);
+            let _ = s.save();
+            w.set_output_highlight_rules(output_highlight_rule_model(&s));
+            apply_custom_output_rules(&w, &bufs, s.output_highlight_rules());
         });
     }
     // Interface settings: apply + persist the terminal font family / size.
@@ -3569,10 +3685,16 @@ fn wire_session_callbacks(
             // terminal-resize callback). 5000-line scrollback is stored for
             // future scroll-navigation support.
             let is_dark_now = weak.upgrade().map(|w| w.get_dark_mode()).unwrap_or(true);
-            let output_highlight = OutputHighlightPreset::from_settings(
-                store.borrow().output_highlight_enabled(),
-                store.borrow().output_highlight_preset(),
-            );
+            let (output_highlight, custom_highlight_rules) = {
+                let settings = store.borrow();
+                (
+                    OutputHighlightPreset::from_settings(
+                        settings.output_highlight_enabled(),
+                        settings.output_highlight_preset(),
+                    ),
+                    compile_output_rules(settings.output_highlight_rules()),
+                )
+            };
             bufs.lock().unwrap().insert(
                 tab_id.clone(),
                 Arc::new(Mutex::new(TermBuffer {
@@ -3580,6 +3702,7 @@ fn wire_session_callbacks(
                     find_query: String::new(),
                     is_dark: is_dark_now,
                     output_highlight,
+                    custom_highlight_rules,
                     sel_anchor: None,
                     sel_focus: None,
                     sel_ranges: Vec::new(),
@@ -4848,6 +4971,46 @@ fn history_model(store: &ConfigStore) -> ModelRc<SharedString> {
     ModelRc::from(Rc::new(VecModel::from(rows)))
 }
 
+fn output_highlight_rule_model(store: &ConfigStore) -> ModelRc<OutputRuleItem> {
+    let rows: Vec<OutputRuleItem> = store
+        .output_highlight_rules()
+        .iter()
+        .map(|rule| OutputRuleItem {
+            pattern: rule.pattern.clone().into(),
+            regex: rule.regex,
+            case_sensitive: rule.case_sensitive,
+            whole_line: rule.whole_line,
+            color: match rule.color.as_str() {
+                "yellow" | "green" | "cyan" | "magenta" | "gray" => rule.color.clone(),
+                _ => "red".to_string(),
+            }
+            .into(),
+            enabled: rule.enabled,
+        })
+        .collect();
+    ModelRc::from(Rc::new(VecModel::from(rows)))
+}
+
+fn validate_output_highlight_rule(
+    pattern: &str,
+    is_regex: bool,
+    case_sensitive: bool,
+) -> std::result::Result<(), String> {
+    if pattern.is_empty() {
+        return Err(t("请输入关键词或正则表达式", "Enter a keyword or regular expression").into());
+    }
+    if pattern.chars().count() > 512 {
+        return Err(t("规则不能超过 512 个字符", "Rules cannot exceed 512 characters").into());
+    }
+    if is_regex {
+        regex::RegexBuilder::new(pattern)
+            .case_insensitive(!case_sensitive)
+            .build()
+            .map_err(|error| format!("{}: {error}", t("无效的正则表达式", "Invalid regular expression")))?;
+    }
+    Ok(())
+}
+
 /// Build the filtered history-view model for the dropdown: case-insensitive
 /// substring matches of `query`, in the same order as the full history (#101).
 fn history_view_model(store: &ConfigStore, query: &str) -> ModelRc<SharedString> {
@@ -5056,6 +5219,24 @@ fn apply_output_highlight(
         let handles: Vec<_> = bufs.lock().unwrap().values().cloned().collect();
         for handle in handles {
             handle.lock().unwrap().output_highlight = mode;
+        }
+    }
+    let tab_ids: Vec<String> = bufs.lock().unwrap().keys().cloned().collect();
+    for tab_id in tab_ids {
+        rebuild_tab_display(window, bufs, &tab_id);
+    }
+}
+
+fn apply_custom_output_rules(
+    window: &AppWindow,
+    bufs: &TermBuffers,
+    rules: &[OutputHighlightRule],
+) {
+    let compiled = compile_output_rules(rules);
+    {
+        let handles: Vec<_> = bufs.lock().unwrap().values().cloned().collect();
+        for handle in handles {
+            handle.lock().unwrap().custom_highlight_rules = compiled.clone();
         }
     }
     let tab_ids: Vec<String> = bufs.lock().unwrap().keys().cloned().collect();
@@ -9494,10 +9675,12 @@ fn build_row(screen: &vt100::Screen, r: u16, cols: u16) -> Line {
 fn highlight_plain_output(
     runs: Vec<HistSpan>,
     preset: OutputHighlightPreset,
+    custom_rules: &[CompiledOutputRule],
 ) -> Vec<HistSpan> {
     if preset == OutputHighlightPreset::Off {
         return runs;
     }
+    let runs = highlight_custom_output(runs, custom_rules);
     const SEARCH_COLS: i32 = 96;
 
     let mut out = Vec::with_capacity(runs.len() + 2);
@@ -9546,6 +9729,109 @@ fn highlight_plain_output(
         }
     }
     out
+}
+
+fn highlight_custom_output(
+    mut runs: Vec<HistSpan>,
+    rules: &[CompiledOutputRule],
+) -> Vec<HistSpan> {
+    for rule in rules {
+        if rule.whole_line
+            && runs
+                .iter()
+                .any(|run| custom_rule_eligible(run) && rule.matcher.is_match(&run.text))
+        {
+            for run in &mut runs {
+                if custom_rule_eligible(run) {
+                    run.fg = vt100::Color::Idx(rule.ansi_index);
+                    run.bold = true;
+                }
+            }
+            continue;
+        }
+
+        let mut next = Vec::with_capacity(runs.len() + 2);
+        for run in runs {
+            if !custom_rule_eligible(&run) {
+                next.push(run);
+                continue;
+            }
+            let matches: Vec<(usize, usize)> = rule
+                .matcher
+                .find_iter(&run.text)
+                .filter(|m| !m.is_empty())
+                .map(|m| (m.start(), m.end()))
+                .collect();
+            if matches.is_empty() {
+                next.push(run);
+            } else {
+                next.extend(style_custom_matches(run, &matches, rule.ansi_index));
+            }
+        }
+        runs = next;
+    }
+    runs
+}
+
+fn custom_rule_eligible(run: &HistSpan) -> bool {
+    matches!(run.fg, vt100::Color::Default)
+        && matches!(run.bg, vt100::Color::Default)
+        && !run.bold
+        && !run.inverse
+}
+
+fn style_custom_matches(
+    run: HistSpan,
+    matches: &[(usize, usize)],
+    ansi_index: u8,
+) -> Vec<HistSpan> {
+    let mut out = Vec::with_capacity(matches.len() * 2 + 1);
+    let mut byte_pos = 0usize;
+    let mut col = run.col;
+    for &(start, end) in matches {
+        if start < byte_pos || end > run.text.len() {
+            continue;
+        }
+        if start > byte_pos {
+            let text = &run.text[byte_pos..start];
+            let cells = text_cell_width(text);
+            let mut part = run.clone();
+            part.text = text.to_string();
+            part.col = col;
+            part.cells = cells;
+            out.push(part);
+            col += cells;
+        }
+
+        let text = &run.text[start..end];
+        let cells = text_cell_width(text);
+        let mut hit = run.clone();
+        hit.text = text.to_string();
+        hit.fg = vt100::Color::Idx(ansi_index);
+        hit.bold = true;
+        hit.col = col;
+        hit.cells = cells;
+        out.push(hit);
+        col += cells;
+        byte_pos = end;
+    }
+    if byte_pos < run.text.len() {
+        let mut part = run;
+        part.text = part.text[byte_pos..].to_string();
+        part.col = col;
+        // Recompute instead of relying on subtraction: wide/combining glyphs
+        // can make byte/character counts differ from terminal grid cells.
+        part.cells = text_cell_width(&part.text);
+        out.push(part);
+    }
+    out
+}
+
+fn text_cell_width(text: &str) -> i32 {
+    use unicode_width::UnicodeWidthChar;
+    text.chars()
+        .map(|ch| ch.width().unwrap_or(0) as i32)
+        .sum()
 }
 
 /// Return `(byte_start, byte_end, xterm_256_index)` for a log severity marker.
@@ -10149,7 +10435,11 @@ impl TermBuffer {
                 let runs = if is_alt {
                     runs
                 } else {
-                    highlight_plain_output(runs, self.output_highlight)
+                    highlight_plain_output(
+                        runs,
+                        self.output_highlight,
+                        &self.custom_highlight_rules,
+                    )
                 };
                 if !runs.is_empty() {
                     last_content = r as i32;
@@ -10211,7 +10501,11 @@ impl TermBuffer {
             } else {
                 &live[idx - hist_len]
             };
-            let runs = highlight_plain_output(line.1.clone(), self.output_highlight);
+            let runs = highlight_plain_output(
+                line.1.clone(),
+                self.output_highlight,
+                &self.custom_highlight_rules,
+            );
             for hs in &runs {
                 let (fg, bg) = vt_span_colors(hs.fg, hs.bg, hs.bold, hs.inverse, self.is_dark);
                 spans.push(TermSpan {
@@ -10735,6 +11029,7 @@ mod selection_tests {
             find_query: String::new(),
             is_dark: false,
             output_highlight: OutputHighlightPreset::Log,
+            custom_highlight_rules: Vec::new(),
             sel_anchor: None,
             sel_focus: None,
             sel_ranges: Vec::new(),
@@ -10915,6 +11210,25 @@ mod log_highlight_tests {
         }
     }
 
+    fn custom_rule(
+        pattern: &str,
+        regex: bool,
+        case_sensitive: bool,
+        whole_line: bool,
+        color: &str,
+    ) -> CompiledOutputRule {
+        compile_output_rules(&[OutputHighlightRule {
+            pattern: pattern.to_string(),
+            regex,
+            case_sensitive,
+            whole_line,
+            color: color.to_string(),
+            enabled: true,
+        }])
+        .pop()
+        .expect("test rule should compile")
+    }
+
     #[test]
     fn highlights_uppercase_level_and_preserves_columns() {
         let runs = highlight_plain_output(
@@ -10923,6 +11237,7 @@ mod log_highlight_tests {
                 0,
             )],
             OutputHighlightPreset::Log,
+            &[],
         );
         assert_eq!(runs.len(), 3);
         assert_eq!(runs[1].text, "ERROR");
@@ -10939,6 +11254,7 @@ mod log_highlight_tests {
         let runs = highlight_plain_output(
             vec![plain_run(json, 4)],
             OutputHighlightPreset::Log,
+            &[],
         );
         let level = runs
             .iter()
@@ -10954,7 +11270,7 @@ mod log_highlight_tests {
     fn preserves_existing_ansi_styles() {
         let mut coloured = plain_run("ERROR", 0);
         coloured.fg = vt100::Color::Idx(2);
-        let runs = highlight_plain_output(vec![coloured], OutputHighlightPreset::Log);
+        let runs = highlight_plain_output(vec![coloured], OutputHighlightPreset::Log, &[]);
         assert_eq!(runs.len(), 1);
         assert!(matches!(runs[0].fg, vt100::Color::Idx(2)));
         assert!(!runs[0].bold);
@@ -10979,6 +11295,7 @@ mod log_highlight_tests {
         let runs = highlight_plain_output(
             vec![plain_run("ERROR request failed", 0)],
             OutputHighlightPreset::Off,
+            &[],
         );
         assert_eq!(runs.len(), 1);
         assert!(matches!(runs[0].fg, vt100::Color::Default));
@@ -10990,6 +11307,7 @@ mod log_highlight_tests {
         let success = highlight_plain_output(
             vec![plain_run("deploy SUCCESS", 0)],
             OutputHighlightPreset::DevOps,
+            &[],
         );
         let token = success
             .iter()
@@ -11000,6 +11318,7 @@ mod log_highlight_tests {
         let json = highlight_plain_output(
             vec![plain_run(r#"{"status":"failed"}"#, 0)],
             OutputHighlightPreset::DevOps,
+            &[],
         );
         let token = json
             .iter()
@@ -11010,7 +11329,66 @@ mod log_highlight_tests {
         let conservative = highlight_plain_output(
             vec![plain_run("deploy SUCCESS", 0)],
             OutputHighlightPreset::Log,
+            &[],
         );
         assert_eq!(conservative.len(), 1);
+    }
+
+    #[test]
+    fn custom_literal_is_case_insensitive_and_overrides_builtin_colour() {
+        let rule = custom_rule("error", false, false, false, "green");
+        let runs = highlight_plain_output(
+            vec![plain_run("ERROR then error", 0)],
+            OutputHighlightPreset::Log,
+            &[rule],
+        );
+        let hits: Vec<_> = runs
+            .iter()
+            .filter(|run| matches!(run.fg, vt100::Color::Idx(10)))
+            .collect();
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].text, "ERROR");
+        assert_eq!(hits[1].text, "error");
+        assert!(!runs.iter().any(|run| matches!(run.fg, vt100::Color::Idx(9))));
+    }
+
+    #[test]
+    fn custom_regex_can_highlight_whole_line_without_overwriting_ansi() {
+        let rule = custom_rule(r"timeout|denied", true, false, true, "magenta");
+        let mut ansi = plain_run(" ANSI", 18);
+        ansi.fg = vt100::Color::Idx(2);
+        let runs = highlight_plain_output(
+            vec![plain_run("request timeout   ", 0), ansi],
+            OutputHighlightPreset::Log,
+            &[rule],
+        );
+        assert!(matches!(runs[0].fg, vt100::Color::Idx(13)));
+        assert!(runs[0].bold);
+        assert!(matches!(runs[1].fg, vt100::Color::Idx(2)));
+    }
+
+    #[test]
+    fn custom_unicode_match_preserves_terminal_grid_columns() {
+        let rule = custom_rule("错误", false, true, false, "red");
+        let text = "前缀错误 done";
+        let mut run = plain_run(text, 0);
+        run.cells = text_cell_width(text);
+        let runs = highlight_plain_output(
+            vec![run],
+            OutputHighlightPreset::Log,
+            &[rule],
+        );
+        let hit = runs
+            .iter()
+            .find(|run| run.text == "错误")
+            .expect("CJK keyword should be highlighted");
+        assert_eq!(hit.col, 4);
+        assert_eq!(hit.cells, 4);
+    }
+
+    #[test]
+    fn invalid_regex_is_rejected_before_persistence() {
+        assert!(validate_output_highlight_rule("([", true, false).is_err());
+        assert!(validate_output_highlight_rule("literal", false, false).is_ok());
     }
 }

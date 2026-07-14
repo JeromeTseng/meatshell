@@ -9,6 +9,7 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 - **纯文本日志级别自动高亮。** 终端会为未携带 ANSI 颜色的 `TRACE`、`DEBUG`、`INFO`、`NOTICE`、`WARN`、`WARNING`、`ERROR`、`FATAL`、`CRITICAL` 和 `PANIC` 级别标记增加主题自适应颜色；结构化日志中的 `level=error` / JSON level 字段也受支持。远端程序已有的 ANSI 样式以及 vim、nano、htop 等全屏 TUI 保持不变。
 - **新增输出高亮设置与 DevOps 规则集。** 设置 → 输出高亮可即时启用或关闭客户端高亮，并在保守的“日志级别”与扩展的“DevOps”规则集之间切换；DevOps 模式额外识别部署结果、重试、健康状态及结构化 `status` / `state` / `result` 字段，切换时会同步重绘当前终端与历史输出。
+- **支持自定义输出高亮规则。** 设置 → 输出高亮现在可添加关键词或正则表达式规则，选择是否区分大小写、仅高亮匹配文字或高亮整行，并从红、黄、绿、青、紫、灰六种颜色中选择；规则可单独启停或删除，会持久化并即时应用于当前终端和历史输出。无效正则会在保存前提示，用户规则优先于内置规则但不会覆盖远端 ANSI 样式。
 
 ---
 
@@ -16,6 +17,7 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 - **Automatically highlight plain-text log levels.** The terminal now adds theme-aware colours to unstyled `TRACE`, `DEBUG`, `INFO`, `NOTICE`, `WARN`, `WARNING`, `ERROR`, `FATAL`, `CRITICAL`, and `PANIC` markers, including structured `level=error` and JSON level fields. Existing ANSI styling and alternate-screen TUIs such as vim, nano, and htop remain untouched.
 - **Add output-highlighting settings and a DevOps preset.** Settings → Output Highlighting can now enable or disable client-side highlighting immediately and switch between the conservative Log Levels preset and an expanded DevOps preset. DevOps mode also recognises deployment results, retries, health states, and structured `status` / `state` / `result` fields; switching presets redraws both live and historical output.
+- **Support custom output-highlighting rules.** Settings → Output Highlighting can now add keyword or regular-expression rules with case sensitivity, matching-text or whole-line scope, and red, yellow, green, cyan, magenta, or gray colours. Rules can be enabled individually or removed, persist across launches, and apply immediately to live and historical output. Invalid regexes are rejected before saving; user rules take priority over built-in presets without overriding remote ANSI styling.
 
 ## [0.6.2]
 

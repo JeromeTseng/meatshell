@@ -562,8 +562,36 @@ pub struct QuickCommand {
     pub send_enter: bool,
 }
 
+/// One user-defined client-side terminal highlighting rule.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OutputHighlightRule {
+    pub pattern: String,
+    #[serde(default)]
+    pub regex: bool,
+    #[serde(default)]
+    pub case_sensitive: bool,
+    #[serde(default)]
+    pub whole_line: bool,
+    /// Stable palette id: red | yellow | green | cyan | magenta | gray.
+    #[serde(default)]
+    pub color: String,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
 fn default_true() -> bool {
     true
+}
+
+fn normalize_highlight_color(color: &str) -> &'static str {
+    match color {
+        "yellow" => "yellow",
+        "green" => "green",
+        "cyan" => "cyan",
+        "magenta" => "magenta",
+        "gray" => "gray",
+        _ => "red",
+    }
 }
 
 /// On-disk layout. Keep additive to ease forward-compat.
@@ -596,6 +624,9 @@ pub struct ConfigFile {
     /// Built-in output highlight preset: "log" (default) or "devops".
     #[serde(default)]
     pub output_highlight_preset: String,
+    /// User-defined rules applied before the selected built-in preset.
+    #[serde(default)]
+    pub output_highlight_rules: Vec<OutputHighlightRule>,
     /// Global UI scale in percent (#100). 0 = default (100%).
     #[serde(default)]
     pub ui_scale: u32,
@@ -1029,6 +1060,28 @@ impl ConfigStore {
             "devops" => "devops".to_string(),
             _ => "log".to_string(),
         };
+    }
+
+    pub fn output_highlight_rules(&self) -> &[OutputHighlightRule] {
+        &self.cache.output_highlight_rules
+    }
+
+    pub fn add_output_highlight_rule(&mut self, mut rule: OutputHighlightRule) {
+        rule.pattern = rule.pattern.trim().to_string();
+        rule.color = normalize_highlight_color(&rule.color).to_string();
+        self.cache.output_highlight_rules.push(rule);
+    }
+
+    pub fn remove_output_highlight_rule(&mut self, index: usize) {
+        if index < self.cache.output_highlight_rules.len() {
+            self.cache.output_highlight_rules.remove(index);
+        }
+    }
+
+    pub fn set_output_highlight_rule_enabled(&mut self, index: usize, enabled: bool) {
+        if let Some(rule) = self.cache.output_highlight_rules.get_mut(index) {
+            rule.enabled = enabled;
+        }
     }
 
     /// Global UI scale in percent (#100). Defaults to 100.
@@ -1760,6 +1813,22 @@ mod tests {
 
         store.set_output_highlight_preset("future-preset".to_string());
         assert_eq!(store.output_highlight_preset(), "log");
+
+        store.add_output_highlight_rule(OutputHighlightRule {
+            pattern: "  connection refused  ".to_string(),
+            regex: false,
+            case_sensitive: false,
+            whole_line: true,
+            color: "unknown".to_string(),
+            enabled: true,
+        });
+        assert_eq!(store.output_highlight_rules().len(), 1);
+        assert_eq!(store.output_highlight_rules()[0].pattern, "connection refused");
+        assert_eq!(store.output_highlight_rules()[0].color, "red");
+        store.set_output_highlight_rule_enabled(0, false);
+        assert!(!store.output_highlight_rules()[0].enabled);
+        store.remove_output_highlight_rule(0);
+        assert!(store.output_highlight_rules().is_empty());
 
         // An older settings file without either field retains the feature that
         // shipped in the previous version: enabled with the log preset.
