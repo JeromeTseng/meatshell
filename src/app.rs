@@ -9417,7 +9417,152 @@ fn build_row(screen: &vt100::Screen, r: u16, cols: u16) -> Line {
             cells,
         });
     }
+    // Plain-text logs often omit ANSI styling entirely. Add a conservative
+    // severity-token highlight on the normal screen while preserving every
+    // colour chosen by the remote program. Alternate-screen TUIs (vim/nano/
+    // htop) are deliberately left styled by the application.
+    if !screen.alternate_screen() {
+        runs = highlight_plain_log_levels(runs);
+    }
     (plain, runs, screen.row_wrapped(r))
+}
+
+/// Highlight the first recognisable log-level token in each otherwise unstyled
+/// terminal run. Uppercase standalone levels cover conventional text logs;
+/// lowercase values are accepted only in a structured `level=...` / JSON field
+/// to avoid colouring ordinary prose that happens to contain words like "error".
+fn highlight_plain_log_levels(runs: Vec<HistSpan>) -> Vec<HistSpan> {
+    const SEARCH_COLS: i32 = 96;
+
+    let mut out = Vec::with_capacity(runs.len() + 2);
+    for run in runs {
+        let eligible = run.col < SEARCH_COLS
+            && matches!(run.fg, vt100::Color::Default)
+            && matches!(run.bg, vt100::Color::Default)
+            && !run.bold
+            && !run.inverse;
+        let max_chars = SEARCH_COLS.saturating_sub(run.col) as usize;
+        let Some((start, end, ansi_index)) = eligible
+            .then(|| log_level_marker(&run.text, max_chars))
+            .flatten()
+        else {
+            out.push(run);
+            continue;
+        };
+
+        let before = run.text[..start].to_string();
+        let marker = run.text[start..end].to_string();
+        let after = run.text[end..].to_string();
+        let before_cells = before.chars().count() as i32;
+        let marker_cells = marker.chars().count() as i32;
+
+        if !before.is_empty() {
+            let mut part = run.clone();
+            part.text = before;
+            part.cells = before_cells;
+            out.push(part);
+        }
+
+        let mut level = run.clone();
+        level.text = marker;
+        level.fg = vt100::Color::Idx(ansi_index);
+        level.bold = true;
+        level.col += before_cells;
+        level.cells = marker_cells;
+        out.push(level);
+
+        if !after.is_empty() {
+            let mut part = run;
+            part.text = after;
+            part.col += before_cells + marker_cells;
+            part.cells = part.cells.saturating_sub(before_cells + marker_cells);
+            out.push(part);
+        }
+    }
+    out
+}
+
+/// Return `(byte_start, byte_end, xterm_256_index)` for a log severity marker.
+fn log_level_marker(text: &str, max_chars: usize) -> Option<(usize, usize, u8)> {
+    const LEVELS: [(&str, u8); 10] = [
+        ("CRITICAL", 9),
+        ("WARNING", 11),
+        ("ERROR", 9),
+        ("FATAL", 9),
+        ("PANIC", 9),
+        ("TRACE", 8),
+        ("DEBUG", 8),
+        ("NOTICE", 14),
+        ("INFO", 14),
+        ("WARN", 11),
+    ];
+
+    let bytes = text.as_bytes();
+    let mut best: Option<(usize, usize, u8)> = None;
+    for (word, colour) in LEVELS {
+        for (start, _) in text.match_indices(word) {
+            if text[..start].chars().count() >= max_chars
+                || !ascii_word_boundary(bytes, start, start + word.len())
+            {
+                continue;
+            }
+            let candidate = (start, start + word.len(), colour);
+            if best.map_or(true, |current| start < current.0) {
+                best = Some(candidate);
+            }
+            break;
+        }
+    }
+    if best.is_some() {
+        return best;
+    }
+
+    // Structured logging commonly emits `level=error`, `level: warn`, or
+    // `{"level":"info"}` using lowercase values. Only accept those values
+    // after a real `level` key, keeping normal lowercase prose untouched.
+    let lower = text.to_ascii_lowercase();
+    let lower_bytes = lower.as_bytes();
+    for (key_start, _) in lower.match_indices("level") {
+        if text[..key_start].chars().count() >= max_chars
+            || !ascii_word_boundary(lower_bytes, key_start, key_start + 5)
+        {
+            continue;
+        }
+        let mut pos = key_start + 5;
+        if lower_bytes.get(pos) == Some(&b'"') {
+            pos += 1;
+        }
+        while lower_bytes.get(pos).is_some_and(u8::is_ascii_whitespace) {
+            pos += 1;
+        }
+        if !matches!(lower_bytes.get(pos).copied(), Some(b'=') | Some(b':')) {
+            continue;
+        }
+        pos += 1;
+        while lower_bytes.get(pos).is_some_and(u8::is_ascii_whitespace) {
+            pos += 1;
+        }
+        if matches!(lower_bytes.get(pos).copied(), Some(b'"') | Some(b'\'')) {
+            pos += 1;
+        }
+        for (word, colour) in LEVELS {
+            let word = word.to_ascii_lowercase();
+            if lower[pos..].starts_with(&word)
+                && ascii_word_boundary(lower_bytes, pos, pos + word.len())
+            {
+                return Some((pos, pos + word.len(), colour));
+            }
+        }
+    }
+    None
+}
+
+fn ascii_word_boundary(bytes: &[u8], start: usize, end: usize) -> bool {
+    let is_word = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    bytes
+        .get(start.wrapping_sub(1))
+        .map_or(true, |b| !is_word(*b))
+        && bytes.get(end).map_or(true, |b| !is_word(*b))
 }
 
 /// Detect how many lines scrolled off the top between two screen snapshots by
@@ -10581,5 +10726,75 @@ mod selection_tests {
         assert!(hit.inverse);
         assert!(matches!(hit.fg, vt100::Color::Default));
         assert!(matches!(hit.bg, vt100::Color::Default));
+    }
+}
+
+#[cfg(test)]
+mod log_highlight_tests {
+    use super::*;
+
+    fn plain_run(text: &str, col: i32) -> HistSpan {
+        HistSpan {
+            text: text.to_string(),
+            fg: vt100::Color::Default,
+            bg: vt100::Color::Default,
+            bold: false,
+            inverse: false,
+            col,
+            cells: text.chars().count() as i32,
+        }
+    }
+
+    #[test]
+    fn highlights_uppercase_level_and_preserves_columns() {
+        let runs = highlight_plain_log_levels(vec![plain_run(
+            "2026-07-14T10:20:30Z ERROR request failed",
+            0,
+        )]);
+        assert_eq!(runs.len(), 3);
+        assert_eq!(runs[1].text, "ERROR");
+        assert_eq!(runs[1].col, 21);
+        assert_eq!(runs[1].cells, 5);
+        assert!(runs[1].bold);
+        assert!(matches!(runs[1].fg, vt100::Color::Idx(9)));
+        assert_eq!(runs[2].col, 26);
+    }
+
+    #[test]
+    fn highlights_structured_lowercase_level_only() {
+        let json = r#"{"level":"warn","message":"disk nearly full"}"#;
+        let runs = highlight_plain_log_levels(vec![plain_run(json, 4)]);
+        let level = runs
+            .iter()
+            .find(|run| run.text == "warn")
+            .expect("structured level should be highlighted");
+        assert!(matches!(level.fg, vt100::Color::Idx(11)));
+
+        assert!(log_level_marker("an error occurred", 96).is_none());
+        assert!(log_level_marker("ERROR_CODE=5", 96).is_none());
+    }
+
+    #[test]
+    fn preserves_existing_ansi_styles() {
+        let mut coloured = plain_run("ERROR", 0);
+        coloured.fg = vt100::Color::Idx(2);
+        let runs = highlight_plain_log_levels(vec![coloured]);
+        assert_eq!(runs.len(), 1);
+        assert!(matches!(runs[0].fg, vt100::Color::Idx(2)));
+        assert!(!runs[0].bold);
+    }
+
+    #[test]
+    fn alternate_screen_does_not_add_log_colours() {
+        let mut parser = vt100::Parser::new(3, 30, 0);
+        parser.process(b"\x1b[?1049hERROR");
+        assert!(parser.screen().alternate_screen());
+        let (_plain, runs, _wrapped) = build_row(parser.screen(), 0, 30);
+        let level = runs
+            .iter()
+            .find(|run| run.text.contains("ERROR"))
+            .expect("alternate-screen text should still render");
+        assert!(matches!(level.fg, vt100::Color::Default));
+        assert!(!level.bold);
     }
 }
