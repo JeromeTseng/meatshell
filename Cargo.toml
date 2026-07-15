@@ -51,6 +51,13 @@ portable-pty = "0.8"
 # same version vt100 uses so "is this glyph 2 cells wide?" agrees with how vt100
 # lays CJK glyphs on the grid — otherwise selection/find columns drift (#132).
 unicode-width = "0.1.14"
+# Split terminal output into complete emoji grapheme clusters (ZWJ sequences,
+# flags, skin tones, variation selectors) before replacing them with images.
+unicode-segmentation = "1.12"
+# Slint's software/femtovg text rasterizers flatten color-font glyphs to a
+# monochrome mask. Embedded 72px Twemoji PNGs keep emoji colored on every
+# renderer without switching the whole Windows application to Skia (#269).
+twemoji-assets = { version = "1.5", default-features = false, features = ["png"] }
 russh-sftp = "2"
 rfd = "0.15"
 arboard = "3"

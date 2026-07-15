@@ -7,6 +7,7 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 ### 新增 / Added
 
+- **终端支持彩色 emoji（#269）。** 终端输出会按完整 Unicode grapheme 识别普通 emoji、肤色修饰、旗帜和 ZWJ 家庭/职业组合，并以缓存的 Twemoji 彩色图像替代 Slint software/femtovg 渲染器产生的单色字体轮廓；图像仍严格占用原终端单元格，普通文字、ANSI 样式、CJK、选择与光标定位保持不变。
 - **进程监视支持居中打开、复制 PID 与安全结束进程。** 进程窗口每次打开时会在主窗口当前所在屏幕居中，并保留用户调整后的窗口尺寸。窗口中的 PID 现在可点击复制；右键进程行可发起结束操作，菜单在右键松开后才显示，避免同一次鼠标事件跳过确认。非 root 登录者结束本人进程时会先二次确认，结束 root 或其他用户的进程则必须输入当前登录用户的管理员（sudo）密码；登录用户本身为 root 时无需再次输入密码。操作通过独立 SSH exec 通道执行，不写入交互终端或命令历史；密码输入关闭回显并使用可清零密文承载，执行前还会重新校验来源会话、PID 与属主，避免切换标签后误操作。
 - **纯文本日志级别自动高亮。** 终端会为未携带 ANSI 颜色的 `TRACE`、`DEBUG`、`INFO`、`NOTICE`、`WARN`、`WARNING`、`ERROR`、`FATAL`、`CRITICAL` 和 `PANIC` 级别标记增加主题自适应颜色；结构化日志中的 `level=error` / JSON level 字段也受支持。远端程序已有的 ANSI 样式以及 vim、nano、htop 等全屏 TUI 保持不变。
 - **新增输出高亮设置与 DevOps 规则集。** 设置 → 输出高亮可即时启用或关闭客户端高亮，并在保守的“日志级别”与扩展的“DevOps”规则集之间切换；DevOps 模式额外识别部署结果、重试、健康状态及结构化 `status` / `state` / `result` 字段，切换时会同步重绘当前终端与历史输出。
@@ -23,6 +24,7 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 ### Added
 
+- **Render color emoji in the terminal (#269).** Terminal output recognizes complete Unicode graphemes—including ordinary emoji, skin tones, flags, and ZWJ family/profession sequences—and replaces the monochrome glyphs produced by Slint's software/femtovg renderers with cached Twemoji color images. Images retain their exact terminal-cell footprint, leaving ordinary text, ANSI styling, CJK, selection, and cursor positioning unchanged.
 - **Center the process monitor, copy PIDs, and safely terminate remote processes.** The process window now opens centered on the main window's current screen while preserving its user-adjusted size. PIDs are clickable to copy, and a row context menu can terminate a process; the menu opens on right-button release so the same pointer event cannot skip confirmation. Non-root logins must confirm their own processes and provide the connected user's administrator (sudo) password for root or other users' processes, while a root login needs no additional password. Actions run through a separate SSH exec channel without entering the interactive terminal or command history, password echo is disabled, secrets use zeroizing storage, and the source session, PID, and owner are revalidated before execution.
 - **Automatically highlight plain-text log levels.** The terminal now adds theme-aware colours to unstyled `TRACE`, `DEBUG`, `INFO`, `NOTICE`, `WARN`, `WARNING`, `ERROR`, `FATAL`, `CRITICAL`, and `PANIC` markers, including structured `level=error` and JSON level fields. Existing ANSI styling and alternate-screen TUIs such as vim, nano, and htop remain untouched.
 - **Add output-highlighting settings and a DevOps preset.** Settings → Output Highlighting can now enable or disable client-side highlighting immediately and switch between the conservative Log Levels preset and an expanded DevOps preset. DevOps mode also recognises deployment results, retries, health states, and structured `status` / `state` / `result` fields; switching presets redraws both live and historical output.

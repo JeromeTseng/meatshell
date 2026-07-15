@@ -31,4 +31,5 @@ package() {
     install -Dm644 "${_dir}/meatshell.desktop"  "${pkgdir}/usr/share/applications/meatshell.desktop"
     install -Dm644 "${_dir}/icon@512.png"       "${pkgdir}/usr/share/icons/hicolor/512x512/apps/meatshell.png"
     install -Dm644 "${_dir}/README.md"          "${pkgdir}/usr/share/doc/${pkgname}/README.md"
+    install -Dm644 "${_dir}/THIRD_PARTY_NOTICES.md" "${pkgdir}/usr/share/doc/${pkgname}/THIRD_PARTY_NOTICES.md"
 }
