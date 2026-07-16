@@ -742,6 +742,11 @@ pub fn run() -> Result<()> {
     // Windows the icon comes from the embedded .ico, so this is a no-op there.)
     let _ = slint::set_xdg_app_id("meatshell");
     let window = AppWindow::new().context("failed to build Slint window")?;
+    // Slint applies preferred-width/height while the native window is being
+    // created. Do not treat those startup Resized events as user adjustments;
+    // otherwise they overwrite the persisted size before restoration (#278).
+    let window_size_tracking_ready = Rc::new(Cell::new(false));
+    let pending_window_size_restore = Rc::new(Cell::new(None::<(f32, f32)>));
 
     // Show the crate version (from Cargo.toml at compile time) in the sidebar,
     // so the footer never drifts out of sync with the actual build.
@@ -1045,13 +1050,12 @@ pub fn run() -> Result<()> {
             window.set_sftp_collapsed(true);
             window.set_sftp_saved_height(s.sftp_panel_height());
         }
-        // Restore the user's preferred window size, if any (#dock).
+        // Capture the user's preferred size. The first native Resized event
+        // drives restoration below; this is deterministic and avoids guessing
+        // how long Slint/window-manager initialization takes (#278).
         let (ww, wh) = s.window_size();
-        if ww > 0.0 && wh > 0.0 {
-            let _ = clamp_window_size_to_monitor(&window.window(), Some((ww, wh)));
-        } else {
-            let _ = clamp_window_size_to_monitor(&window.window(), None);
-        }
+        let preferred = (ww > 0.0 && wh > 0.0).then_some((ww, wh));
+        pending_window_size_restore.set(preferred);
     }
     {
         let store = store.clone();
@@ -2163,6 +2167,8 @@ pub fn run() -> Result<()> {
         let ev_store = store.clone();
         let ev_activity = activity.clone();
         let ev_exit_confirmed = exit_confirmed.clone();
+        let ev_window_size_tracking_ready = window_size_tracking_ready.clone();
+        let ev_pending_window_size_restore = pending_window_size_restore.clone();
         let mut last_cursor_logical: Option<(f32, f32)> = None;
         let mut macos_wheel_accum = 0.0_f32;
         // Track the inputs that make up WinActivity; recompute on each change.
@@ -2252,6 +2258,29 @@ pub fn run() -> Result<()> {
                     focused = *f;
                     apply_activity(focused, minimized, occluded);
                     if *f {
+                        // Some window managers deliver the first Resized event
+                        // before the native window belongs to a monitor. Focus
+                        // is a reliable second opportunity to seed restoration;
+                        // request_inner_size will produce the Resized event that
+                        // verifies the native window actually reached the target.
+                        if !ev_window_size_tracking_ready.get() {
+                            if let (Some(win), Some(preferred)) =
+                                (weak.upgrade(), ev_pending_window_size_restore.get())
+                            {
+                                if let Some(target) =
+                                    clamp_window_size_to_monitor(&win.window(), Some(preferred))
+                                {
+                                    tracing::info!(
+                                        "[WINDOW_SIZE] focus retry saved={:.0}x{:.0} \
+                                         target={:.0}x{:.0}",
+                                        preferred.0,
+                                        preferred.1,
+                                        target.0,
+                                        target.1,
+                                    );
+                                }
+                            }
+                        }
                         refresh_revealed_main_window(weak.clone());
                     }
                 }
@@ -2281,18 +2310,68 @@ pub fn run() -> Result<()> {
                             .with_winit_window(|ww| ww.is_maximized())
                             .unwrap_or(false);
                         win.set_window_maximized(maxed);
+                        if !ev_window_size_tracking_ready.get() {
+                            if let Some(preferred) = ev_pending_window_size_restore.get() {
+                                let scale = win.window().scale_factor().max(0.01);
+                                let actual =
+                                    (size.width as f32 / scale, size.height as f32 / scale);
+                                if let Some(target) =
+                                    clamp_window_size_to_monitor(&win.window(), Some(preferred))
+                                {
+                                    tracing::info!(
+                                        "[WINDOW_SIZE] restore requested saved={:.0}x{:.0} \
+                                         target={:.0}x{:.0} actual={:.0}x{:.0} scale={:.2}",
+                                        preferred.0,
+                                        preferred.1,
+                                        target.0,
+                                        target.1,
+                                        actual.0,
+                                        actual.1,
+                                        scale,
+                                    );
+                                    if (actual.0 - target.0).abs() <= 2.0
+                                        && (actual.1 - target.1).abs() <= 2.0
+                                    {
+                                        ev_pending_window_size_restore.set(None);
+                                        ev_window_size_tracking_ready.set(true);
+                                        tracing::info!(
+                                            "[WINDOW_SIZE] restore settled at {:.0}x{:.0}",
+                                            actual.0,
+                                            actual.1
+                                        );
+                                    }
+                                } else {
+                                    tracing::warn!(
+                                        "[WINDOW_SIZE] restore deferred: no monitor available \
+                                         saved={:.0}x{:.0}",
+                                        preferred.0,
+                                        preferred.1,
+                                    );
+                                }
+                            } else {
+                                // First run: accept the initialized size as the
+                                // baseline, but do not persist this startup event.
+                                ev_window_size_tracking_ready.set(true);
+                            }
+                            return EventResult::Propagate;
+                        }
                         // Record the last user-adjusted windowed size while the
                         // resize event still carries authoritative native
                         // geometry. Persisting only during CloseRequested can
                         // observe an installer/minimize transition instead
                         // (#278). Keep writes in memory here; save_layout flushes
                         // the config on exit.
-                        if !maxed && !minimized {
+                        if ev_window_size_tracking_ready.get() && !maxed && !minimized {
                             let scale = win.window().scale_factor().max(0.01);
                             let width = size.width as f32 / scale;
                             let height = size.height as f32 / scale;
                             if width > 200.0 && height > 200.0 {
                                 ev_store.borrow_mut().set_window_size(width, height);
+                                tracing::debug!(
+                                    "[WINDOW_SIZE] recorded user size {:.0}x{:.0}",
+                                    width,
+                                    height
+                                );
                             }
                         }
                     }
