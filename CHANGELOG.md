@@ -5,6 +5,8 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 ## [Unreleased]
 
+## [0.6.4] - 2026-07-17
+
 ### 新增 / Added
 
 - **原生支持 PuTTY / MobaXterm 的 PPK 私钥（#281）。** SSH、SFTP 与跳板连接现在可直接加载 PPKv2 和 PPKv3 文件，支持 RSA、Ed25519 及 NIST ECDSA 密钥，并支持 PPKv2 的 SHA-1 派生及 PPKv3 的 Argon2 加密私钥。PPK 会先在内存中完成 AES-CBC 解密和 HMAC 完整性校验，再转换为 russh 使用的密钥对象；不会调用外部 `puttygen`，也不会将转换后的私钥写入临时文件。私钥选择器同时加入 `.ppk` 类型，粘贴的 PPK 内容也可自动识别。
