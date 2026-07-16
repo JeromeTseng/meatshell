@@ -8534,6 +8534,18 @@ fn wire_key_input(
                 tracing::info!("[KEY_DIAG] Backspace PASSED all filters → sent to PTY");
             }
 
+            if should_drop_debian_bare_ctrl_marker(
+                key.as_str(),
+                ctrl,
+                debian_ctrl_marker_workaround_enabled(),
+            ) {
+                tracing::debug!(
+                    "send_key: dropped Debian/Slint bare Ctrl modifier marker {}",
+                    redact_key(key.as_str())
+                );
+                return;
+            }
+
             let bytes = key_to_pty_bytes(key.as_str(), ctrl, alt, app_cursor);
             // Log only the length — never the keystroke bytes, which can be
             // password characters (#15).
@@ -8673,18 +8685,14 @@ fn wire_key_input(
                 match arboard::Clipboard::new().and_then(|mut cb| cb.get_text()) {
                     Ok(text) => {
                         if text.contains(['\r', '\n']) {
-                            let preview: String = text.chars().take(1200).collect();
-                            let truncated = text.chars().count() > 1200;
-                            let preview = if truncated {
-                                format!("{preview}\n…")
-                            } else {
-                                preview
-                            };
+                            let large = paste_requires_large_review(&text);
+                            let preview = text.clone();
                             let _ = slint::invoke_from_event_loop(move || {
                                 if let Some(w) = weak.upgrade() {
                                     w.set_paste_confirm_tab(tab_id.into());
                                     w.set_paste_confirm_text(text.into());
                                     w.set_paste_confirm_preview(preview.into());
+                                    w.set_paste_confirm_large(large);
                                     w.set_paste_confirm_open(true);
                                 }
                             });
@@ -9604,6 +9612,38 @@ fn normalize_pasted_newlines(text: &str) -> String {
     text.replace("\r\n", "\r").replace('\n', "\r")
 }
 
+fn should_drop_debian_bare_ctrl_marker(key: &str, ctrl: bool, workaround: bool) -> bool {
+    workaround
+        && ctrl
+        && matches!(key.chars().collect::<Vec<_>>().as_slice(), ['\u{0011}'] | ['\u{0016}'])
+}
+
+#[cfg(target_os = "linux")]
+fn debian_ctrl_marker_workaround_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        let Ok(release) = std::fs::read_to_string("/etc/os-release") else {
+            return false;
+        };
+        release.lines().any(|line| {
+            let Some((key, value)) = line.split_once('=') else {
+                return false;
+            };
+            let value = value.trim_matches('"');
+            key == "ID" && value.eq_ignore_ascii_case("debian")
+                || key == "ID_LIKE"
+                    && value
+                        .split_ascii_whitespace()
+                        .any(|item| item.eq_ignore_ascii_case("debian"))
+        })
+    })
+}
+
+#[cfg(not(target_os = "linux"))]
+fn debian_ctrl_marker_workaround_enabled() -> bool {
+    false
+}
+
 fn key_to_pty_bytes(key: &str, ctrl: bool, alt: bool, app_cursor: bool) -> Vec<u8> {
     // --- Special keys (Slint PUA code points) ------------------------------
     // Arrow keys: respect DECCKM application-cursor mode.
@@ -9672,15 +9712,14 @@ fn key_to_pty_bytes(key: &str, ctrl: bool, alt: bool, app_cursor: bool) -> Vec<u
     // Meta and discard the line the user was typing — the "Alt clears the
     // command" bug.
     //
-    // The `!ctrl` guard is deliberate: a real Ctrl+P..Ctrl+X is encoded by some
-    // Linux/macOS builds directly as the same C0 bytes (0x10..0x18) but with
-    // ctrl=true (handled by the Ctrl branch just below), so we must NOT swallow
-    // those. A lone modifier never carries ctrl=true except bare Ctrl/CtrlR
-    // themselves, which are harmless to pass through as today.
-    if !ctrl {
-        if let Some(c) = key.chars().next() {
-            let cp = c as u32;
-            if key.chars().count() == 1 && (0x10..=0x18).contains(&cp) {
+    // Keep ctrl=true C0 values here: some Linux/macOS builds encode real
+    // Ctrl+P..Ctrl+X directly as 0x10..=0x18. Debian's bare Ctrl markers are
+    // filtered at the event boundary, where the distro-specific workaround is
+    // available (#274).
+    if let Some(c) = key.chars().next() {
+        let cp = c as u32;
+        if key.chars().count() == 1 {
+            if !ctrl && (0x10..=0x18).contains(&cp) {
                 return vec![];
             }
         }
@@ -10770,6 +10809,30 @@ impl TermBuffer {
     }
 }
 
+/// Switch long prompts to the large, scrollable paste-review surface before a
+/// compact confirmation card can grow enough to cover its own action buttons.
+fn paste_requires_large_review(text: &str) -> bool {
+    const COMPACT_CHAR_LIMIT: usize = 600;
+    const COMPACT_LINE_LIMIT: usize = 12;
+    let bytes = text.as_bytes();
+    let mut lines = 1usize;
+    let mut index = 0usize;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'\r' => {
+                lines += 1;
+                if bytes.get(index + 1) == Some(&b'\n') {
+                    index += 1;
+                }
+            }
+            b'\n' => lines += 1,
+            _ => {}
+        }
+        index += 1;
+    }
+    text.chars().count() > COMPACT_CHAR_LIMIT || lines > COMPACT_LINE_LIMIT
+}
+
 thread_local! {
     /// Decoded images are retained only for emoji actually seen in terminal
     /// output. A full 72x72 RGBA Twemoji is ~20 KiB; this avoids decoding on
@@ -11325,10 +11388,27 @@ mod key_tests {
     #[test]
     fn ctrl_letter_c0_still_passes() {
         // A real Ctrl+R encoded as the C0 byte 0x12 with ctrl=true must still be
-        // forwarded — the !ctrl guard keeps the #43 fix from breaking it.
+        // forwarded; the #274 fix filters only bare Ctrl/CtrlR markers.
         assert_eq!(key_to_pty_bytes("\u{0012}", true, false, false), vec![0x12]);
         // Ctrl+X as C0 0x18.
         assert_eq!(key_to_pty_bytes("\u{0018}", true, false, false), vec![0x18]);
+    }
+
+    #[test]
+    fn debian_bare_ctrl_markers_do_not_reach_nano() {
+        // Slint on Debian emits these before the actual Ctrl+letter event.
+        assert!(should_drop_debian_bare_ctrl_marker("\u{0011}", true, true));
+        assert!(should_drop_debian_bare_ctrl_marker("\u{0016}", true, true));
+        // Other platforms retain their existing direct-C0 behaviour.
+        assert!(!should_drop_debian_bare_ctrl_marker(
+            "\u{0011}",
+            true,
+            false
+        ));
+        assert!(!should_drop_debian_bare_ctrl_marker("x", true, true));
+        // The following Ctrl+X must still become CAN (0x18), which nano uses
+        // for Exit.
+        assert_eq!(key_to_pty_bytes("x", true, false, false), vec![0x18]);
     }
 
     #[test]
@@ -11373,6 +11453,15 @@ mod key_tests {
         assert_eq!(normalize_pasted_newlines("a\rb"), "a\rb");
         // No newlines → unchanged.
         assert_eq!(normalize_pasted_newlines("echo hi"), "echo hi");
+    }
+
+    #[test]
+    fn long_pastes_switch_to_large_review() {
+        assert!(!paste_requires_large_review("short prompt\nsecond line"));
+        assert!(!paste_requires_large_review(&"a".repeat(600)));
+        assert!(paste_requires_large_review(&"a".repeat(601)));
+        assert!(!paste_requires_large_review(&vec!["line"; 12].join("\r\n")));
+        assert!(paste_requires_large_review(&vec!["line"; 13].join("\r\n")));
     }
 }
 
