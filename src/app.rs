@@ -502,7 +502,10 @@ fn clamp_window_size_to_monitor(
 
     window.with_winit_window(|ww| {
         let scale = ww.scale_factor().max(0.01);
-        let monitor = ww.current_monitor()?;
+        // Before `Window::run()` makes the native window visible, winit often
+        // has no current monitor yet. Falling back to the primary monitor lets
+        // the persisted size actually apply during startup (#278).
+        let monitor = ww.current_monitor().or_else(|| ww.primary_monitor())?;
         let monitor_size = monitor.size();
         let monitor_pos = monitor.position();
         let max_w = (monitor_size.width as f64 / scale - 16.0).max(1.0) as f32;
@@ -2278,6 +2281,20 @@ pub fn run() -> Result<()> {
                             .with_winit_window(|ww| ww.is_maximized())
                             .unwrap_or(false);
                         win.set_window_maximized(maxed);
+                        // Record the last user-adjusted windowed size while the
+                        // resize event still carries authoritative native
+                        // geometry. Persisting only during CloseRequested can
+                        // observe an installer/minimize transition instead
+                        // (#278). Keep writes in memory here; save_layout flushes
+                        // the config on exit.
+                        if !maxed && !minimized {
+                            let scale = win.window().scale_factor().max(0.01);
+                            let width = size.width as f32 / scale;
+                            let height = size.height as f32 / scale;
+                            if width > 200.0 && height > 200.0 {
+                                ev_store.borrow_mut().set_window_size(width, height);
+                            }
+                        }
                     }
                 }
                 WEvent::CloseRequested => {
@@ -5054,8 +5071,15 @@ fn save_layout(win: &AppWindow, store: &Rc<RefCell<ConfigStore>>) {
         .window()
         .with_winit_window(|ww| ww.is_maximized())
         .unwrap_or_else(|| win.get_window_maximized());
-    if !native_maximized && w > 200.0 && h > 200.0 {
-        let (w, h) = clamp_window_size_to_monitor(&win.window(), Some((w, h))).unwrap_or((w, h));
+    let (saved_w, saved_h) = s.window_size();
+    if !native_maximized
+        && (saved_w <= 0.0 || saved_h <= 0.0)
+        && w > 200.0
+        && h > 200.0
+    {
+        // Normal resize events keep this cache current. Only fall back to the
+        // close-time geometry for a first run where no valid resize was seen;
+        // do not issue a new native resize while the window is shutting down.
         s.set_window_size(w, h);
     }
     let _ = s.save();
