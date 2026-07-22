@@ -5,6 +5,16 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 ## [Unreleased]
 
+### 新增 / Added
+
+- **快捷指令支持主窗口四向停靠（#215）。** “设置 → 界面 → 侧栏”新增“快捷命令作为侧栏”开关；开启后，现有快捷指令弹窗底部“管理”旁才显示拖拽把手，可将快捷指令拖到与快速连接、资源面板相同的主窗口停靠层，并在左、右、上、下边缘显示吸附高亮。成功停靠后，命令栏里的原快捷入口会隐藏，只保留侧栏或收起后的单个闪电图标；同边已有收起工具条时，闪电、快速连接与资源图标会合并到同一列（上/下停靠时为同一行），不再各占一列。只有该边没有其他收起面板时才单独创建工具条。同一边缘只允许一个面板展开，面板方向、尺寸及收起状态会持久保存。
+
+---
+
+### Added
+
+- **Dock quick commands on any main-window edge (#215).** Interface → Sidebars now includes a “Quick commands as a sidebar” switch. Once enabled, a drag handle appears beside “Manage” in the existing popup and can dock the commands at the same main-window layer as Quick Connect and Resources, with snap highlighting on every edge. After docking, the original command-bar entry is hidden and only the sidebar or its single collapsed lightning icon remains. On an edge with an existing collapsed tool strip, the Quick Commands, Quick Connect, and Resources icons share one column (or one row for top/bottom docks) instead of reserving separate strips; a standalone strip is created only when needed. Only one panel may stay expanded on an edge, and the dock edge, size, and collapsed state persist.
+
 ## [0.6.5] - 2026-07-17
 
 ### 新增 / Added
