@@ -181,6 +181,7 @@ pub(super) fn open_window(
     wire_webdav_upload(&ctx);
     wire_terminal_settings(&ctx);
     wire_ui_scale_and_wallpaper(&ctx);
+    super::color_theme::wire(&ctx);
 
     let sessions_model: Rc<VecModel<SessionInfo>> = Rc::new(VecModel::default());
     window.set_sessions(ModelRc::from(sessions_model.clone()));
