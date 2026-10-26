@@ -1223,6 +1223,8 @@ export component AppWindow inherits Window {
     // Rename an open session's tab. Request pre-fills the dialog (Rust reads
     // the current title); submit applies the new display name.
     callback tab-rename-request(string /* tab-id */);
+    // Save the ssh connection running in a local tab as a session (#501).
+    callback tab-save-session(string /* tab-id */);
     callback rename-tab(string /* tab-id */, string /* new-title */);
     in-out property <bool> tab-rename-open: false;
     in-out property <string> tab-rename-id: "";
@@ -2052,6 +2054,7 @@ export component AppWindow inherits Window {
                         merge-pane() => { root.pane-merge(pane.id); }
                         tab-duplicate(id) => { root.tab-duplicate(id); }
                         tab-rename-request(id) => { root.tab-rename-request(id); }
+                        tab-save-session(id) => { root.tab-save-session(id); }
                         tab-drag-move(id, ax, ay, own-strip) => {
                             root.tab-drag-px = ax - pane-area.absolute-position.x;
                             root.tab-drag-py = ay - pane-area.absolute-position.y;

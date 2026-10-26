@@ -747,3 +747,6 @@ msgstr "Folders you open will show up here."
 
 msgid "Clear recent"
 msgstr "Clear recent"
+
+msgid "Add to session list"
+msgstr "Add to session list"

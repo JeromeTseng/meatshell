@@ -744,3 +744,6 @@ msgstr "打开过的目录会显示在这里。"
 
 msgid "Clear recent"
 msgstr "清除最近访问"
+
+msgid "Add to session list"
+msgstr "加入会话列表"

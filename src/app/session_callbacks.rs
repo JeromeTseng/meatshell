@@ -1320,6 +1320,8 @@ pub(super) fn wire_session_callbacks(
                 title: tab_title.into(),
                 kind: "terminal".into(),
                 connected: false,
+                // Local shells offer "Add to session list" (#501).
+                local: session.kind == SessionKind::Local,
             });
             // Each session keeps its own SFTP collapse state + sizes, seeded from
             // the global defaults (the "collapse SFTP by default" pref and the

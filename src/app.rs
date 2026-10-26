@@ -29,6 +29,7 @@ mod panes;
 mod port_forward;
 mod quick_commands;
 mod resource_ui;
+mod save_tab_session;
 mod session_callbacks;
 mod session_event;
 mod session_editor;
